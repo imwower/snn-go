@@ -6,109 +6,153 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/imwower/snn-go/internal/config"
 	"github.com/nats-io/nats.go"
 )
 
-type ringItem struct {
-	Topic string          `json:"topic"`
-	Data  json.RawMessage `json:"data"`
-	T     int64           `json:"time_unix"`
+type sseHub struct {
+	mu      sync.RWMutex
+	clients map[chan []byte]struct{}
 }
 
-type wsEnvelope struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data"`
+func newHub() *sseHub {
+	return &sseHub{
+		clients: make(map[chan []byte]struct{}),
+	}
+}
+
+func (h *sseHub) add(ch chan []byte) {
+	h.mu.Lock()
+	h.clients[ch] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *sseHub) del(ch chan []byte) {
+	h.mu.Lock()
+	delete(h.clients, ch)
+	h.mu.Unlock()
+}
+
+func (h *sseHub) broadcast(evType string, payload []byte) {
+	msg := append([]byte("event: "+evType+"\n"+"data: "), payload...)
+	msg = append(msg, []byte("\n\n")...)
+	h.mu.RLock()
+	for ch := range h.clients {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+	h.mu.RUnlock()
+}
+
+func sseHandler(h *sseHub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "SSE not supported", http.StatusInternalServerError)
+			return
+		}
+
+		ch := make(chan []byte, 256)
+		h.add(ch)
+		defer h.del(ch)
+
+		notify := r.Context().Done()
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case msg := <-ch:
+				if _, err := w.Write(msg); err != nil {
+					return
+				}
+				flusher.Flush()
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			case <-notify:
+				return
+			}
+		}
+	}
 }
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.SetPrefix("[API] ")
+
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
 		log.Fatalf("加载配置失败：%v", err)
 	}
+	log.Printf("监听 %s；NATS=%s；Stream=%s", cfg.UI.Addr, cfg.NATS.URL, cfg.NATS.Stream)
 
-	// WebSocket 中心
-	hub := newHub()
-	go hub.run()
-
-	// /ws：WebSocket 实时推送
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		serveWS(hub, w, r)
-	})
-
-	// /api/config：提供配置（仅用标准库 JSON 编码）
 	http.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(cfg)
 	})
 
-	// 最近指标（可选）
-	ring := make([]ringItem, 0, 200)
-	pushRing := func(topic string, data []byte) {
-		ring = append(ring, ringItem{Topic: topic, Data: append([]byte(nil), data...), T: time.Now().Unix()})
-		if len(ring) > 200 {
-			ring = ring[len(ring)-200:]
-		}
-	}
-	http.HandleFunc("/api/metrics/recent", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(ring)
-	})
+	hub := newHub()
+	http.HandleFunc("/events", sseHandler(hub))
 
-	// JetStream Durable + Pull + ACK：为三个主题分别创建持久订阅
 	nc, err := nats.Connect(cfg.NATS.URL)
 	if err != nil {
-		log.Fatalf("连接 NATS 失败：%v", err)
+		log.Fatalf("NATS 连接失败：%v", err)
 	}
 	js, err := nc.JetStream()
 	if err != nil {
-		log.Fatalf("初始化 JetStream 失败：%v", err)
+		log.Fatalf("JetStream 初始化失败：%v", err)
 	}
 
 	type subSpec struct {
-		Subj    string
+		Subject string
 		Durable string
-		Typ     string
+		Event   string
 	}
 	specs := []subSpec{
-		{cfg.NATS.Subjects.MetricsBatch, "UI_BATCH", "metrics_batch"},
-		{cfg.NATS.Subjects.MetricsEpoch, "UI_EPOCH", "metrics_epoch"},
-		{cfg.NATS.Subjects.UILog, "UI_LOG", "log"},
+		{cfg.NATS.Subjects.MetricsBatch, "SSE_BATCH", "metrics_batch"},
+		{cfg.NATS.Subjects.MetricsEpoch, "SSE_EPOCH", "metrics_epoch"},
+		{cfg.NATS.Subjects.UILog, "SSE_LOG", "log"},
+		{cfg.NATS.Subjects.TrainInit, "SSE_INIT", "train_init"},
+		{cfg.NATS.Subjects.TrainIter, "SSE_ITER", "train_iter"},
 	}
 
 	for _, sp := range specs {
-		sub, err := js.PullSubscribe(sp.Subj, sp.Durable, nats.BindStream(cfg.NATS.Stream))
+		sub, err := js.PullSubscribe(sp.Subject, sp.Durable, nats.BindStream(cfg.NATS.Stream))
 		if err != nil {
-			log.Fatalf("订阅 %s 时出错：%v", sp.Subj, err)
+			log.Fatalf("订阅失败 subject=%s durable=%s：%v", sp.Subject, sp.Durable, err)
 		}
-		// 每个主题起一个拉取协程
-		go func(s *nats.Subscription, typ string) {
+		go func(s *nats.Subscription, ev string) {
 			for {
-				// 批量拉取 + ACK
-				ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
-				msgs, err := s.Fetch(64, nats.Context(ctx))
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				msgs, err := s.Fetch(128, nats.Context(ctx))
 				cancel()
 				if err != nil && err != nats.ErrTimeout {
+					log.Printf("拉取失败（%s）：%v", ev, err)
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
 				for _, m := range msgs {
-					env := wsEnvelope{Type: typ, Data: json.RawMessage(m.Data)}
-					b, _ := json.Marshal(&env)
-					hub.broadcast <- b
-					pushRing(typ, m.Data)
-					_ = m.Ack() // 及时 ACK，避免积压
+					hub.broadcast(ev, m.Data)
+					_ = m.Ack()
 				}
 				if len(msgs) == 0 {
-					time.Sleep(200 * time.Millisecond) // 空轮询退避
+					time.Sleep(200 * time.Millisecond)
 				}
 			}
-		}(sub, sp.Typ)
+		}(sub, sp.Event)
 	}
 
-	// 静态前端：ui-vue/dist
 	dist := "ui-vue/dist"
 	index := dist + "/index.html"
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -117,9 +161,9 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("Build UI first: cd ui-vue && npm i && npm run build\n"))
+		_, _ = w.Write([]byte("请先构建前端：cd ui-vue && npm i && npm run build\n"))
 	})
 
-	log.Printf("WebSocket/API 服务监听于 %s", cfg.UI.Addr)
+	log.Printf("SSE/API 已启动，地址 %s", cfg.UI.Addr)
 	log.Fatal(http.ListenAndServe(cfg.UI.Addr, nil))
 }

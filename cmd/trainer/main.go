@@ -14,10 +14,17 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.SetPrefix("[TRAIN] ")
+
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
 		log.Fatalf("加载配置失败：%v", err)
 	}
+	log.Printf("配置：dataset=%s epochs=%d batch=%d T=%d K=%d lr=%.4f",
+		cfg.Training.Dataset, cfg.Training.Epochs, cfg.Training.BatchSize,
+		cfg.Training.Timesteps, cfg.Training.FixedPointK, cfg.Training.LR,
+	)
 	bus, err := natsbus.Connect(natsbus.StreamConfig{
 		Stream: cfg.NATS.Stream, URL: cfg.NATS.URL, DupeWindowSec: cfg.NATS.DupeWindowSec,
 	})
@@ -40,6 +47,9 @@ func main() {
 	if err != nil {
 		log.Printf("数据加载器异常：%v", err)
 	}
+	if ld == nil {
+		log.Fatalf("数据加载器未就绪")
+	}
 
 	// 模型
 	net := snn.NewThreeCompNet(
@@ -48,11 +58,11 @@ func main() {
 		cfg.Training.KappaBS, cfg.Training.KappaAS,
 	)
 
-	globalStep := 0
 	for epoch := 1; epoch <= cfg.Training.Epochs; epoch++ {
 
 		var sumLoss, sumAcc float64
 		var steps int
+		log.Printf("=== 开始第 %d/%d 轮 ===", epoch, cfg.Training.Epochs)
 
 		for {
 			b, ok := ld.Next()
@@ -60,13 +70,12 @@ func main() {
 				break
 			}
 			steps++
-			globalStep++
 
 			// —— 固定时间步前向 —— //
 			logits, cache := net.Forward(b.X, cfg.Training.Timesteps)
 
 			// —— FPT 残差（真实计算）：以 Vs 时间序列做 ||v^t - v^{t-1}|| / (||v^{t-1}||+ε) 的 batch 均值 —— //
-			residual := residualFromCache(cache)
+			residual := residualFromVs(cache)
 
 			_ = bus.PublishJSON(cfg.NATS.Subjects.TrainIter,
 				natsbus.MsgID("fpt-", epoch, "-", steps, "-", time.Now().UnixNano()),
@@ -88,11 +97,13 @@ func main() {
 				natsbus.MsgID("mb-", epoch, "-", steps),
 				events.MetricsBatch{Epoch: epoch, Step: steps, Loss: loss, Acc: acc, Time: events.Now()},
 			)
+			text := fmt.Sprintf("轮次=%d 步数=%d 损失=%.4f 准确率=%.4f 残差=%.6f", epoch, steps, loss, acc, residual)
+			log.Println(text)
 			_ = bus.PublishJSON(cfg.NATS.Subjects.UILog,
 				natsbus.MsgID("log-", epoch, "-", steps),
 				events.UISysLog{
 					Level: "INFO",
-					Msg:   fmt.Sprintf("轮次=%d 步数=%d 损失=%.4f 准确率=%.4f 残差=%.6f", epoch, steps, loss, acc, residual),
+					Msg:   text,
 					Time:  events.Now(),
 				},
 			)
@@ -109,18 +120,20 @@ func main() {
 			natsbus.MsgID("pa-", epoch),
 			events.ParamApply{Epoch: epoch, Step: steps, LR: cfg.Training.LR, Time: events.Now()},
 		)
+		log.Printf("=== 结束第 %d 轮：loss=%.4f acc=%.4f ===", epoch, epochLoss, epochAcc)
 	}
 
 	_ = bus.PublishJSON(cfg.NATS.Subjects.UILog,
 		natsbus.MsgID("log-done-", time.Now().UnixNano()),
-		events.UISysLog{Level: "INFO", Msg: "训练已完成", Time: events.Now()},
+		events.UISysLog{Level: "INFO", Msg: "训练完成", Time: events.Now()},
 	)
+	log.Println("训练完成，退出")
 }
 
-// residualFromCache：步间差分残差（FPT 近似）
+// residualFromVs：步间差分残差（FPT 近似）
 // r = mean_{t=1..T-1} ||v_s^t - v_s^{t-1}||_2 / (||v_s^{t-1}||_2 + 1e-8)
 // 若已保留 F(v)-v，可替换为函数残差测度，两者在离散一阶迭代下等价。
-func residualFromCache(c snn.ForwardCache) float64 {
+func residualFromVs(c snn.ForwardCache) float64 {
 	if len(c.Vs) <= 1 {
 		return 0
 	}

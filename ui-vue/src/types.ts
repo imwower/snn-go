@@ -40,6 +40,7 @@ export interface MetricPayload {
   lr?: number;
   residual?: number;
   k?: number;
+  time_unix?: number;
 }
 
 export interface MetricEntry extends MetricPayload {
@@ -82,7 +83,28 @@ export interface LogEntry extends LogPayload {
   at: number;
 }
 
-export type SocketEnvelope =
-  | { type: 'metrics'; data: MetricPayload }
-  | { type: 'spikes'; data: SpikePayload }
-  | { type: 'log'; data: LogPayload };
+export interface TrainInitEvent {
+  dataset?: string;
+  epochs?: number;
+  batch_size?: number;
+  timesteps?: number;
+  fixed_point_K?: number;
+  fixed_point_tol?: number;
+  hidden?: number;
+  lr?: number;
+  time_unix?: number;
+}
+
+export interface TrainIterEvent {
+  epoch?: number;
+  step?: number;
+  k?: number;
+  residual?: number;
+  time_unix?: number;
+}
+
+export interface UISysLogEvent {
+  level?: string;
+  msg?: string;
+  time_unix?: number;
+}

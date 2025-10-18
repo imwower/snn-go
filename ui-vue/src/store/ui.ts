@@ -145,6 +145,14 @@ export const useUiStore = defineStore('ui', {
         this.logs.splice(0, this.logs.length - MAX_LOGS);
       }
     },
+    pushPlainLog(message: string, level: LogPayload['level'] = 'INFO', ts?: number) {
+      const unixSeconds = typeof ts === 'number' ? ts : Math.floor(Date.now() / 1000);
+      this.pushLog({
+        ts: unixSeconds,
+        level,
+        message
+      });
+    },
     replaceMetrics(payloads: MetricPayload[]) {
       const entries = payloads.slice(-MAX_METRICS).map((payload) => {
         const historic = payload as MetricPayload & { at?: number };

@@ -5,6 +5,13 @@ import (
 	"math/rand"
 )
 
+// 三隔室 SNN 说明（简化）：
+//  - basal/apical/soma 以离散时间演化；
+//  - 前向固定 T 步，将各步 soma 电位 v_s 累加：logits = Σ_t v_s · W_out + b_out；
+//  - 训练与评估共用 Σ_t 聚合，避免“Loss 低但 Acc 低”；
+//  - FPT 残差监控 r = mean_t ||v_s^t - v_s^{t-1}|| / (||v_s^{t-1}|| + eps)；
+//  - 目前仅更新读出层，可按需扩展端到端 STE-BPTT。
+
 type ThreeCompNet struct {
 	Input, Hidden, Output int
 
