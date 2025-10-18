@@ -31,7 +31,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useUiStore } from '../store/ui';
-import type { LogPayload, MetricPayload } from '../types';
 
 const store = useUiStore();
 
@@ -89,50 +88,23 @@ const sparkPoints = computed(() => {
     .join(' ');
 });
 
-const describeMessage = (entry: { subject: string; type?: string; payload?: unknown } | undefined) => {
-  if (!entry) {
-    return { subject: '无消息', summary: '等待流数据...' };
-  }
-  if (entry.type === 'metrics' && entry.payload && typeof entry.payload === 'object') {
-    const metricPayload = entry.payload as MetricPayload;
-    const loss = formatNumber(metricPayload.loss, 4);
-    return {
-      subject: entry.subject || 'metrics',
-      summary: `loss ${loss}`
-    };
-  }
-  if (entry.type === 'log' && entry.payload && typeof entry.payload === 'object') {
-    const logPayload = entry.payload as LogPayload;
-    const metricPayload = logPayload.metric as MetricPayload | undefined;
-    const loss = metricPayload ? formatNumber(metricPayload.loss, 4) : '--';
-    const acc = metricPayload ? formatNumber(metricPayload.acc, 3) : '--';
-    return {
-      subject: logPayload.message || 'log',
-      summary: `loss ${loss} · acc ${acc}`
-    };
-  }
-  if (entry.type === 'spikes' && entry.payload && typeof entry.payload === 'object') {
-    const spike = entry.payload as { layer?: number; neurons?: number[] };
-    const count = Array.isArray(spike.neurons) ? spike.neurons.length : 0;
-    return {
-      subject: entry.subject || 'spikes',
-      summary: `layer ${spike.layer ?? '?'} · ${count} spikes`
-    };
-  }
-  const preview = JSON.stringify(entry.payload)?.slice(0, 40) ?? '';
-  return {
-    subject: entry.subject || entry.type || 'event',
-    summary: preview || '收到事件'
-  };
-};
-
 const message = computed(() => {
-  const last = store.messages[store.messages.length - 1];
-  const base = describeMessage(last);
-  if (last) {
-    const time = new Date(last.at).toLocaleTimeString('zh-CN', { hour12: false });
-    base.summary = `${base.summary} · ${time}`;
+  if (store.isDownloadActive) {
+    const time = new Date(store.download.startedAt || Date.now()).toLocaleTimeString('zh-CN', { hour12: false });
+    return {
+      subject: '下载中',
+      summary: `${store.download.name} · ${store.downloadPercent}% · ${time}`
+    };
   }
-  return base;
+  const last = store.logs[store.logs.length - 1];
+  if (!last) {
+    return { subject: '日志', summary: '暂无日志' };
+  }
+  const time = new Date(last.at).toLocaleTimeString('zh-CN', { hour12: false });
+  const level = last.level ?? 'INFO';
+  return {
+    subject: `[${level}]`,
+    summary: `${last.message} · ${time}`
+  };
 });
 </script>

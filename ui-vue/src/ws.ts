@@ -5,7 +5,8 @@ import type {
   TrainInitEvent,
   TrainIterEvent,
   UISysLogEvent,
-  LogPayload
+  LogPayload,
+  DatasetDownloadEvent
 } from './types';
 
 let source: EventSource | null = null;
@@ -87,6 +88,10 @@ const handleTrainIter = (payload: TrainIterEvent) => {
   storeInstance?.pushMessage('train_iter', payload, 'train_iter');
 };
 
+const handleDatasetDownload = (payload: DatasetDownloadEvent) => {
+  storeInstance?.applyDatasetEvent(payload);
+};
+
 const setupListeners = (evSource: EventSource) => {
   evSource.addEventListener('metrics_batch', (event: MessageEvent<string>) => {
     const payload = parseJSON<MetricPayload>(event.data);
@@ -120,6 +125,12 @@ const setupListeners = (evSource: EventSource) => {
     const payload = parseJSON<TrainIterEvent>(event.data);
     if (payload) {
       handleTrainIter(payload);
+    }
+  });
+  evSource.addEventListener('dataset_download', (event: MessageEvent<string>) => {
+    const payload = parseJSON<DatasetDownloadEvent>(event.data);
+    if (payload) {
+      handleDatasetDownload(payload);
     }
   });
 
@@ -167,7 +178,11 @@ const connect = () => {
   if (!storeInstance) {
     return;
   }
-  source = new EventSource('/events');
+  const url =
+    typeof window !== 'undefined' && import.meta.env.DEV
+      ? 'http://127.0.0.1:8000/events'
+      : '/events';
+  source = new EventSource(url, { withCredentials: false });
   setupListeners(source);
 };
 

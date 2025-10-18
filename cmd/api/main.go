@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/imwower/snn-go/internal/config"
+	"github.com/imwower/snn-go/internal/datasets"
 	"github.com/nats-io/nats.go"
 )
 
@@ -51,6 +53,13 @@ func (h *sseHub) broadcast(evType string, payload []byte) {
 
 func sseHandler(h *sseHub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -103,7 +112,41 @@ func main() {
 	})
 
 	hub := newHub()
-	http.HandleFunc("/events", sseHandler(hub))
+	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		sseHandler(hub)(w, r)
+	})
+
+	dsManager := datasets.NewManager(cfg.Training.DataRoot, func(event string, payload []byte) {
+		hub.broadcast(event, payload)
+	})
+	listHandler := func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodOptions:
+			dsManager.HandleList(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+	http.HandleFunc("/api/datasets", listHandler)
+	http.HandleFunc("/api/datasets/", listHandler)
+
+	downloadHandler := func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodOptions:
+			dsManager.HandleDownload(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+	http.HandleFunc("/api/datasets/download", downloadHandler)
+	http.HandleFunc("/api/datasets/download/", downloadHandler)
 
 	nc, err := nats.Connect(cfg.NATS.URL)
 	if err != nil {
@@ -137,7 +180,11 @@ func main() {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				msgs, err := s.Fetch(128, nats.Context(ctx))
 				cancel()
-				if err != nil && err != nats.ErrTimeout {
+				if err != nil {
+					if errors.Is(err, context.DeadlineExceeded) || err == nats.ErrTimeout {
+						time.Sleep(200 * time.Millisecond)
+						continue
+					}
 					log.Printf("拉取失败（%s）：%v", ev, err)
 					time.Sleep(500 * time.Millisecond)
 					continue

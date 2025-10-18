@@ -15,7 +15,7 @@
   },
   "training": {
     "dataset": "FASHION",
-    "data_root": ".data/fashion/FashionMNIST/raw",
+    "data_root": ".data/fashion",
     "epochs": 3,
     "batch_size": 128,
     "timesteps": 10,

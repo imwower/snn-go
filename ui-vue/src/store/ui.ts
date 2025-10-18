@@ -10,7 +10,8 @@ import type {
   TrainingConfig,
   TrainingStatus,
   LogPayload,
-  LogEntry
+  LogEntry,
+  DatasetDownloadEvent
 } from '../types';
 
 const MAX_METRICS = 500;
@@ -75,11 +76,26 @@ export const useUiStore = defineStore('ui', {
     layersLayout: buildLayout(defaultConfig()),
     messages: [] as MessageEntry[],
     logs: [] as LogEntry[],
-    toast: null as { message: string; type: 'info' | 'error'; at: number; duration?: number } | null
+    toast: null as { message: string; type: 'info' | 'error'; at: number; duration?: number } | null,
+    download: {
+      active: false,
+      name: '',
+      progress: 0,
+      startedAt: 0
+    }
   }),
   getters: {
     totalNodes(state) {
       return state.layersLayout.reduce((acc, layer) => acc + layer.count, 0);
+    },
+    isDownloadActive(state) {
+      return state.download.active;
+    },
+    downloadPercent(state) {
+      return Math.round(state.download.progress * 100);
+    },
+    isControlLocked(state) {
+      return state.download.active || state.status === 'Initializing';
     }
   },
   actions: {
@@ -200,6 +216,76 @@ export const useUiStore = defineStore('ui', {
       }
       this.toast = null;
     },
+    startDownload(name: string) {
+      if (this.download.active && this.download.name === name) {
+        return;
+      }
+      this.download = {
+        active: true,
+        name,
+        progress: 0,
+        startedAt: Date.now()
+      };
+      this.pushMessage('dataset', { name, state: 'start' }, 'dataset_download');
+      this.pushPlainLog(`开始下载数据集 ${name}`, 'INFO');
+    },
+    updateDownloadProgress(progress: number) {
+      if (!this.download.active) {
+        return;
+      }
+      const clamped = Number.isFinite(progress) ? Math.min(Math.max(progress, 0), 1) : this.download.progress;
+      this.download.progress = clamped;
+    },
+    finishDownload(success: boolean, message?: string, name?: string) {
+      if (!this.download.active || (name && this.download.name !== name)) {
+        return;
+      }
+      const datasetName = this.download.name;
+      if (success && this.download.progress < 1) {
+        this.download.progress = 1;
+      }
+      this.download = {
+        active: false,
+        name: '',
+        progress: 0,
+        startedAt: 0
+      };
+      if (success) {
+        this.pushPlainLog(`数据集 ${datasetName} 下载完成`, 'INFO');
+      } else {
+        this.pushPlainLog(`数据集 ${datasetName} 下载失败${message ? `：${message}` : ''}`, 'ERROR');
+      }
+      this.pushMessage('dataset', { name: datasetName, success, message }, 'dataset_download');
+    },
+    applyDatasetEvent(event: DatasetDownloadEvent) {
+      if (!event || !event.name) {
+        return;
+      }
+      const state = event.state ?? '';
+      if (state === 'start') {
+        this.startDownload(event.name);
+        if (typeof event.progress === 'number') {
+          this.updateDownloadProgress(event.progress);
+        }
+        return;
+      }
+      if (state === 'progress') {
+        this.startDownload(event.name);
+        if (typeof event.progress === 'number') {
+          this.updateDownloadProgress(event.progress);
+        }
+        return;
+      }
+      if (state === 'complete') {
+        const progress = typeof event.progress === 'number' ? event.progress : 1;
+        this.updateDownloadProgress(progress);
+        this.finishDownload(true, undefined, event.name);
+        return;
+      }
+      if (state === 'error') {
+        this.finishDownload(false, event.message, event.name);
+      }
+    },
     reset() {
       this.cfg = defaultConfig();
       this.status = 'Idle';
@@ -210,6 +296,12 @@ export const useUiStore = defineStore('ui', {
       this.messages = [];
       this.logs = [];
       this.toast = null;
+      this.download = {
+        active: false,
+        name: '',
+        progress: 0,
+        startedAt: 0
+      };
     }
   }
 });

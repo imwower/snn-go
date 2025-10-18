@@ -5,6 +5,7 @@ export interface DatasetSummary {
   name?: string;
   status?: string;
   message?: string | null;
+  installed?: boolean;
   path?: string;
   progress?: number;
   downloaded?: number;
@@ -106,5 +107,14 @@ export interface TrainIterEvent {
 export interface UISysLogEvent {
   level?: string;
   msg?: string;
+  time_unix?: number;
+}
+
+export interface DatasetDownloadEvent {
+  name?: string;
+  state?: 'start' | 'progress' | 'complete' | 'error';
+  progress?: number;
+  message?: string;
+  installed?: boolean;
   time_unix?: number;
 }

@@ -10,8 +10,8 @@
             </option>
           </select>
         </label>
-        <button @click="downloadDataset" :disabled="isBusy">
-          下载到本地
+        <button @click="downloadDataset" :disabled="downloadLocked">
+          {{ downloadButtonText }}
         </button>
       </section>
       <fieldset>
@@ -44,27 +44,35 @@
       </fieldset>
     </div>
     <div class="buttons">
-      <button @click="initTraining" :disabled="isBusy">初始化</button>
-      <button @click="startTraining" :disabled="isBusy">训练</button>
-      <button @click="stopTraining" :disabled="isBusy">停止</button>
+      <button @click="initTraining" :disabled="controlsLocked">初始化</button>
+      <button @click="startTraining" :disabled="controlsLocked">训练</button>
+      <button @click="stopTraining" :disabled="controlsLocked">停止</button>
     </div>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import axios from 'axios';
 import { useUiStore } from '../store/ui';
 import type { DatasetListPayload, DatasetName } from '../types';
 
 const store = useUiStore();
+
 interface DatasetOption {
   value: DatasetName;
   label: string;
   status?: string;
   message?: string | null;
+  installed?: boolean;
 }
-const datasetOptions = ref<DatasetOption[]>([{ value: store.cfg.dataset, label: store.cfg.dataset }]);
+
+const DEFAULT_DATASETS: DatasetOption[] = [
+  { value: 'MNIST', label: 'MNIST 手写数字' },
+  { value: 'FASHION', label: 'Fashion-MNIST 服饰' }
+];
+
+const datasetOptions = ref<DatasetOption[]>(ensureDefaultDatasets([{ value: store.cfg.dataset, label: store.cfg.dataset }]));
 const isBusy = ref(false);
 
 const dataset = computed({
@@ -92,8 +100,24 @@ const tol = computed({
   set: (value: number) => store.setCfg({ tol: value })
 });
 
-const withBusy = async (task: () => Promise<void>) => {
+const downloadLocked = computed(() => store.isDownloadActive || isBusy.value);
+const controlsLocked = computed(() => isBusy.value || store.isControlLocked);
+const downloadPercentText = computed(() => `${store.downloadPercent}%`);
+const downloadButtonText = computed(() => {
+  if (store.isDownloadActive) {
+    const percent = downloadPercentText.value;
+    const name = store.download.name || dataset.value;
+    return `下载中 ${name} · ${percent}`;
+  }
+  return '下载到本地';
+});
+
+const withBusy = async (task: () => Promise<void>, opts: { allowWhenDownloading?: boolean } = {}) => {
   if (isBusy.value) {
+    return;
+  }
+  if (store.isDownloadActive && !opts.allowWhenDownloading) {
+    store.showToast('数据集下载进行中，请稍候完成后再试', 'error');
     return;
   }
   isBusy.value = true;
@@ -107,7 +131,7 @@ const withBusy = async (task: () => Promise<void>) => {
 const loadDatasets = async () => {
   try {
     const { data } = await axios.get<DatasetListPayload | DatasetName[]>('/api/datasets');
-    const options = normalizeDatasetList(data);
+    const options = ensureDefaultDatasets(normalizeDatasetList(data));
     if (options.length > 0) {
       datasetOptions.value = options;
       if (!options.some((option) => option.value === store.cfg.dataset)) {
@@ -130,12 +154,16 @@ onMounted(() => {
 const downloadDataset = () =>
   withBusy(async () => {
     try {
-      await axios.post('/api/datasets/download', { name: dataset.value });
+      await axios.post(
+        '/api/datasets/download',
+        { name: dataset.value },
+        {}
+      );
     } catch (err) {
       console.warn('Download failed', err);
       store.showToast('数据集下载失败', 'error');
     }
-  });
+  }, { allowWhenDownloading: true });
 
 const initTraining = () =>
   withBusy(async () => {
@@ -204,38 +232,94 @@ function normalizeDatasetList(payload: unknown): DatasetOption[] {
       obj.available.forEach((entry) => pushOption(toDatasetOption(entry)));
     }
     if (Array.isArray(obj.installed)) {
-      obj.installed.forEach((entry) => pushOption(toDatasetOption(entry)));
+      obj.installed.forEach((entry) => pushOption(toDatasetOption(entry, 'installed')));
     }
   }
   return result;
 }
 
-function toDatasetOption(entry: unknown): DatasetOption | null {
+function toDatasetOption(entry: unknown, statusHint?: string): DatasetOption | null {
   if (typeof entry === 'string') {
     const value = entry.trim();
     if (!value) {
       return null;
     }
-    return { value: value as DatasetName, label: value };
+    return { value: value as DatasetName, label: value, status: statusHint };
   }
   if (entry && typeof entry === 'object') {
-    const record = entry as Record<string, unknown>;
-    const rawSlug = typeof record.slug === 'string' ? record.slug.trim() : undefined;
-    const rawName = typeof record.name === 'string' ? record.name.trim() : undefined;
-    const rawDataset = typeof record.dataset === 'string' ? record.dataset.trim() : undefined;
-    const rawValue = typeof record.value === 'string' ? record.value.trim() : undefined;
-    const value = rawSlug || rawDataset || rawValue || rawName;
-    const label = rawName || rawSlug || rawDataset || rawValue;
-    if (!value || !label) {
+    const typed = entry as {
+      value?: unknown;
+      name?: unknown;
+      label?: unknown;
+      status?: unknown;
+      message?: unknown;
+      installed?: unknown;
+    };
+    const value =
+      typeof typed.value === 'string'
+        ? typed.value
+        : typeof typed.name === 'string'
+          ? typed.name
+          : typeof typed.label === 'string'
+            ? typed.label
+            : null;
+    if (!value) {
       return null;
     }
+    const installedFlag = typeof typed.installed === 'boolean' ? typed.installed : undefined;
+    let statusValue: string | undefined;
+    if (typeof typed.status === 'string') {
+      statusValue = typed.status;
+    } else if (installedFlag === true) {
+      statusValue = "installed";
+    } else if (installedFlag === false) {
+      statusValue = "missing";
+    } else {
+      statusValue = statusHint;
+    }
+    const resolvedLabel =
+      typeof typed.label === 'string'
+        ? typed.label
+        : typeof typed.name === 'string'
+          ? typed.name
+          : value;
     return {
       value: value as DatasetName,
-      label,
-      status: typeof record.status === 'string' ? record.status : undefined,
-      message: typeof record.message === 'string' ? record.message : undefined
+      label: resolvedLabel,
+      status: statusValue,
+      message: typeof typed.message === 'string' ? typed.message : null,
+      installed: installedFlag
     };
   }
   return null;
 }
+
+function ensureDefaultDatasets(options: DatasetOption[]): DatasetOption[] {
+  const seen = new Set(options.map((option) => option.value));
+  const withDefaults = [...options];
+  DEFAULT_DATASETS.forEach((preset) => {
+    if (!seen.has(preset.value)) {
+      withDefaults.push({ ...preset, status: 'missing' });
+    }
+  });
+  return withDefaults.map((option) => {
+    const preset = DEFAULT_DATASETS.find((item) => item.value === option.value);
+    const baseLabel = preset ? preset.label : option.label;
+    const label =
+      option.status === 'missing' || option.installed === false ? `${baseLabel}（未安装）` : baseLabel;
+    return {
+      ...option,
+      label
+    };
+  });
+}
+
+watch(
+  () => store.download.active,
+  (active, prevActive) => {
+    if (!active && prevActive) {
+      void loadDatasets();
+    }
+  }
+);
 </script>

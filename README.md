@@ -37,7 +37,7 @@
 - `nats.url`：NATS 地址（默认 `nats://127.0.0.1:4222`）
 - `nats.stream`：JetStream 流名（默认 `SNN_EVENTS`）
 - `training.*`：数据集、epoch、batch、时间步 T、固定点迭代（K、tol）、学习率、三隔室参数等
-- `training.dataset`：可选 `"MNIST"`、`"FASHION"` 或 `"SYNTH"`（默认 `FASHION`）
+- `training.dataset`：可选 `"MNIST"` 或 `"FASHION"`（默认 `FASHION`）
 - `training.end_to_end`：布尔，开启端到端 STE 近似反传（默认 `false`，仅更新读出层）
 - `model.input` / `model.output`：输入 / 输出维度
 - `ui.addr`：UI 监听地址（默认 `:8000`）

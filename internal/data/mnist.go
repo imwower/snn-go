@@ -2,11 +2,10 @@ package data
 
 import (
 	"compress/gzip"
-	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
-	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -27,18 +26,28 @@ type Loader struct {
 }
 
 func NewLoaderMNIST(root string, bs int, seed int64) (*Loader, error) {
-	img, err := readIdx(filepath.Join(root, "train-images-idx3-ubyte"), 16)
+	imgPath := filepath.Join(root, "train-images-idx3-ubyte")
+	imgGZPath := imgPath + ".gz"
+	img, err := readIdx(imgPath, 16)
 	if err != nil {
-		img, _ = readIdxGZ(filepath.Join(root, "train-images-idx3-ubyte.gz"), 16)
+		img, err = readIdxGZ(imgGZPath, 16)
+		if err != nil {
+			return nil, fmt.Errorf("mnist: read training images: %w", err)
+		}
 	}
-	lb, err2 := readIdx(filepath.Join(root, "train-labels-idx1-ubyte"), 8)
-	if err2 != nil {
-		lb, _ = readIdxGZ(filepath.Join(root, "train-labels-idx1-ubyte.gz"), 8)
+
+	labelPath := filepath.Join(root, "train-labels-idx1-ubyte")
+	labelGZPath := labelPath + ".gz"
+	lb, err := readIdx(labelPath, 8)
+	if err != nil {
+		lb, err = readIdxGZ(labelGZPath, 8)
+		if err != nil {
+			return nil, fmt.Errorf("mnist: read training labels: %w", err)
+		}
 	}
-	// 若失败则回退到合成数据
+
 	if len(img) == 0 || len(lb) == 0 {
-		log.Printf("mnist：%s 缺少数据集，回退到合成数据", root)
-		return synth(bs, seed), nil
+		return nil, fmt.Errorf("mnist: dataset under %s is empty", root)
 	}
 
 	n := len(lb)
@@ -57,6 +66,7 @@ func NewLoaderMNIST(root string, bs int, seed int64) (*Loader, error) {
 	for i := 0; i < n; i++ {
 		labels[i] = int(lb[i])
 	}
+
 	log.Printf("mnist：已从 %s 载入 %d 条样本", root, n)
 	ld := &Loader{images: images, labels: labels, bs: bs, seed: seed}
 	ld.reset()
@@ -119,36 +129,4 @@ func readIdxGZ(path string, header int) ([]byte, error) {
 		return nil, errors.New("bad idx.gz header")
 	}
 	return all[header:], nil
-}
-
-// —— 合成数据兜底：10 类，二维可分，高维噪声 —— //
-
-func synth(bs int, seed int64) *Loader {
-	r := rand.New(rand.NewSource(seed))
-	n := 10000
-	images := make([][]float64, n)
-	labels := make([]int, n)
-	for i := 0; i < n; i++ {
-		c := i % 10
-		x1 := r.NormFloat64()*0.5 + float64(c)/10.0
-		x2 := r.NormFloat64()*0.5 + float64(c)/10.0
-		arr := make([]float64, 784)
-		arr[0] = sigmoid(x1)
-		arr[1] = sigmoid(x2)
-		for j := 2; j < 784; j++ {
-			arr[j] = r.Float64() * 0.1
-		}
-		images[i] = arr
-		labels[i] = c
-	}
-	ld := &Loader{images: images, labels: labels, bs: bs, seed: seed}
-	ld.reset()
-	return ld
-}
-
-func sigmoid(x float64) float64 { return 1 / (1 + math.Exp(-x)) }
-
-// （可选）简单二进制读工具：未使用，但保留做 idx 兼容
-func readBigEndianInt32(b []byte) int {
-	return int(binary.BigEndian.Uint32(b))
 }

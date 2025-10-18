@@ -42,7 +42,7 @@ func main() {
 			Hidden: cfg.Training.Hidden, LR: cfg.Training.LR, Time: events.Now(),
 		})
 
-	// 数据集：MNIST/FASHION/SYNTH 自动选择
+	// 数据集：MNIST/FASHION 自动选择
 	ld, err := data.NewLoader(cfg.Training.Dataset, cfg.Training.DataRoot, cfg.Training.BatchSize, cfg.Training.Seed)
 	if err != nil {
 		log.Printf("数据加载器异常：%v", err)
