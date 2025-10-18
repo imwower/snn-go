@@ -64,7 +64,6 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	var cfg Config
-	// config.yaml 使用 JSON 语法，直接反序列化
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return Config{}, errors.New("failed to parse config.yaml as JSON: " + err.Error())
 	}

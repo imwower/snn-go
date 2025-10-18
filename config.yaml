@@ -25,17 +25,12 @@
     "theta": 1.0,
     "alpha_b": 0.05,
     "alpha_a": 0.05,
-    "alpha_s": 0.1,
+    "alpha_s": 0.10,
     "kappa_bs": 0.2,
     "kappa_as": 0.2,
     "hidden": 256,
     "seed": 42
   },
-  "model": {
-    "input": 784,
-    "output": 10
-  },
-  "ui": {
-    "addr": ":8000"   // api + sse + static
-  }
+  "model": { "input": 784, "output": 10 },
+  "ui": { "addr": ":8000" }
 }

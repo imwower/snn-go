@@ -1,9 +1,11 @@
 package data
 
 import (
-	"bufio"
 	"compress/gzip"
+	"encoding/binary"
 	"errors"
+	"io"
+	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -11,8 +13,8 @@ import (
 )
 
 type Batch struct {
-	X [][]float64 // [B][784] 0..1
-	Y []int       // [B] class id
+	X [][]float64 // [B][784] 归一化像素 0..1
+	Y []int       // [B] 类别 id
 }
 
 type Loader struct {
@@ -21,57 +23,61 @@ type Loader struct {
 	bs     int
 	pos    int
 	perm   []int
+	seed   int64
 }
 
 func NewLoaderMNIST(root string, bs int, seed int64) (*Loader, error) {
 	img, err := readIdx(filepath.Join(root, "train-images-idx3-ubyte"), 16)
 	if err != nil {
-		// 尝试 .gz
-		img, err = readIdxGZ(filepath.Join(root, "train-images-idx3-ubyte.gz"), 16)
+		img, _ = readIdxGZ(filepath.Join(root, "train-images-idx3-ubyte.gz"), 16)
 	}
 	lb, err2 := readIdx(filepath.Join(root, "train-labels-idx1-ubyte"), 8)
 	if err2 != nil {
-		lb, err2 = readIdxGZ(filepath.Join(root, "train-labels-idx1-ubyte.gz"), 8)
+		lb, _ = readIdxGZ(filepath.Join(root, "train-labels-idx1-ubyte.gz"), 8)
 	}
-	if err != nil || err2 != nil || len(lb) == 0 {
-		// 兜底：合成可线性分的 2D → 映射到 784 维
+	// 若失败则回退到合成数据
+	if len(img) == 0 || len(lb) == 0 {
+		log.Printf("mnist: dataset missing under %s, falling back to synthetic data", root)
 		return synth(bs, seed), nil
 	}
-	// 解析成 [N][784]
-	var images [][]float64
-	pix := img
-	// 前 16 字节是 header，已在 reader 中跳过
-	// 这里 img 已经是纯像素流
+
 	n := len(lb)
-	images = make([][]float64, n)
+	if len(img) < n*784 {
+		return nil, errors.New("image length < labels*784")
+	}
+	images := make([][]float64, n)
 	for i := 0; i < n; i++ {
-		arr := make([]float64, 784)
+		row := make([]float64, 784)
 		for j := 0; j < 784; j++ {
-			arr[j] = float64(pix[i*784+j]) / 255.0
+			row[j] = float64(img[i*784+j]) / 255.0
 		}
-		images[i] = arr
+		images[i] = row
 	}
 	labels := make([]int, n)
 	for i := 0; i < n; i++ {
 		labels[i] = int(lb[i])
 	}
-	ld := &Loader{images: images, labels: labels, bs: bs}
-	ld.reset(seed)
+	log.Printf("mnist: loaded %d samples from %s", n, root)
+	ld := &Loader{images: images, labels: labels, bs: bs, seed: seed}
+	ld.reset()
 	return ld, nil
 }
 
-func (l *Loader) reset(seed int64) {
+func (l *Loader) reset() {
 	l.pos = 0
 	n := len(l.labels)
-	l.perm = rand.Perm(n)
-	rand.Seed(seed)
+	r := rand.New(rand.NewSource(l.seed))
+	l.perm = r.Perm(n)
 }
 
 func (l *Loader) Next() (Batch, bool) {
 	if l.pos >= len(l.labels) {
 		return Batch{}, false
 	}
-	end := min(l.pos+l.bs, len(l.labels))
+	end := l.pos + l.bs
+	if end > len(l.labels) {
+		end = len(l.labels)
+	}
 	idx := l.perm[l.pos:end]
 	bx := make([][]float64, len(idx))
 	by := make([]int, len(idx))
@@ -83,92 +89,66 @@ func (l *Loader) Next() (Batch, bool) {
 	return Batch{X: bx, Y: by}, true
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func readIdx(path string, header int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	// 只返回 payload（像素或标签字节）
-	_, _ = f.Seek(header, 0)
+func readIdx(path string, header int) ([]byte, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if len(b) < int(header) {
-		return nil, errors.New("bad idx")
+	if len(b) < header {
+		return nil, errors.New("bad idx header")
 	}
 	return b[header:], nil
 }
 
-func readIdxGZ(path string, header int64) ([]byte, error) {
+func readIdxGZ(path string, header int) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(bufio.NewReader(f))
+	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, err
 	}
 	defer gz.Close()
-	all, err := ioReadAll(gz)
+	all, err := io.ReadAll(gz)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(all)) < header {
-		return nil, errors.New("bad idx.gz")
+	if len(all) < header {
+		return nil, errors.New("bad idx.gz header")
 	}
 	return all[header:], nil
 }
 
-func ioReadAll(r *gzip.Reader) ([]byte, error) {
-	buf := make([]byte, 0, 512*1024)
-	tmp := make([]byte, 32*1024)
-	for {
-		n, err := r.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return nil, err
-		}
-	}
-	return buf, nil
-}
+// —— 合成数据兜底：10 类，二维可分，高维噪声 —— //
 
-// 合成数据：两簇高斯，映射到 784 维（其余维用噪声）
 func synth(bs int, seed int64) *Loader {
-	rand.Seed(seed)
+	r := rand.New(rand.NewSource(seed))
 	n := 10000
 	images := make([][]float64, n)
 	labels := make([]int, n)
 	for i := 0; i < n; i++ {
 		c := i % 10
-		x1 := rand.NormFloat64()*0.5 + float64(c)/10.0
-		x2 := rand.NormFloat64()*0.5 + float64(c)/10.0
+		x1 := r.NormFloat64()*0.5 + float64(c)/10.0
+		x2 := r.NormFloat64()*0.5 + float64(c)/10.0
 		arr := make([]float64, 784)
 		arr[0] = sigmoid(x1)
 		arr[1] = sigmoid(x2)
 		for j := 2; j < 784; j++ {
-			arr[j] = rand.Float64() * 0.1
+			arr[j] = r.Float64() * 0.1
 		}
 		images[i] = arr
 		labels[i] = c
 	}
-	ld := &Loader{images: images, labels: labels, bs: bs}
-	ld.reset(seed)
+	ld := &Loader{images: images, labels: labels, bs: bs, seed: seed}
+	ld.reset()
 	return ld
 }
 
 func sigmoid(x float64) float64 { return 1 / (1 + math.Exp(-x)) }
+
+// （可选）简单二进制读工具：未使用，但保留做 idx 兼容
+func readBigEndianInt32(b []byte) int {
+	return int(binary.BigEndian.Uint32(b))
+}

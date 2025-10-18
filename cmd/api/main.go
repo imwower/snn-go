@@ -8,9 +8,14 @@ import (
 	"time"
 
 	"github.com/imwower/snn-go/internal/config"
-	"github.com/imwower/snn-go/internal/natsbus"
 	"github.com/nats-io/nats.go"
 )
+
+type ringItem struct {
+	Topic string          `json:"topic"`
+	Data  json.RawMessage `json:"data"`
+	T     int64           `json:"time_unix"`
+}
 
 func main() {
 	cfg, err := config.Load("config.yaml")
@@ -18,86 +23,94 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	bus, err := natsbus.Connect(natsbus.StreamConfig{
-		Stream: cfg.NATS.Stream, URL: cfg.NATS.URL, DupeWindowSec: cfg.NATS.DupeWindowSec,
-	})
-	if err != nil {
-		log.Fatalf("nats: %v", err)
+	// in-memory ring for recent metrics
+	ring := make([]ringItem, 0, 200)
+	push := func(topic string, b []byte) {
+		ring = append(ring, ringItem{Topic: topic, Data: append([]byte(nil), b...), T: time.Now().Unix()})
+		if len(ring) > 200 {
+			ring = ring[len(ring)-200:]
+		}
 	}
-	defer bus.Close()
 
-	// 简单内存缓存最近指标用于 /api/metrics/recent
-	type item struct {
-		Topic string
-		Data  json.RawMessage
-		T     time.Time
-	}
-	var ring []item
-
-	http.HandleFunc("/api/metrics/recent", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(w)
-		_ = enc.Encode(ring)
-	})
-
-	// SSE：把 NATS 的 metrics/log 事件转成浏览器推送
+	// SSE endpoint
 	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			http.Error(w, "no flush", 500)
+			http.Error(w, "no flusher", http.StatusInternalServerError)
 			return
 		}
 
-		// 订阅 JetStream（拉式 -> 简化成常规 sub）
-		nc, _ := nats.Connect(cfg.NATS.URL)
-		js, _ := nc.JetStream()
-		subj := []string{cfg.NATS.Subjects.MetricsBatch, cfg.NATS.Subjects.MetricsEpoch, cfg.NATS.Subjects.UILog}
-		subs := make([]*nats.Subscription, 0, len(subj))
-		for _, s := range subj {
-			sub, _ := js.SubscribeSync(s)
-			subs = append(subs, sub)
+		nc, err := nats.Connect(cfg.NATS.URL)
+		if err != nil {
+			http.Error(w, "nats connect failed", http.StatusInternalServerError)
+			return
 		}
 		defer nc.Drain()
 
+		ch := make(chan *nats.Msg, 256)
+		subjects := []string{
+			"snn.metrics.batch",
+			"snn.metrics.epoch",
+			"snn.ui.log.training",
+		}
+		for _, s := range subjects {
+			if _, err := nc.ChanSubscribe(s, ch); err != nil {
+				log.Printf("subscribe %s: %v", s, err)
+			}
+		}
+		notify := r.Context().Done()
+
 		for {
-			msg, err := subs[0].NextMsg(500 * time.Millisecond) // 轮询其中一个，简化示例
-			if err == nil {
-				// 按 type 包装为 {type: "...", data: ...}
+			select {
+			case msg := <-ch:
 				var evType string
 				switch msg.Subject {
-				case cfg.NATS.Subjects.MetricsBatch:
+				case "snn.metrics.batch":
 					evType = "metrics_batch"
-				case cfg.NATS.Subjects.MetricsEpoch:
+				case "snn.metrics.epoch":
 					evType = "metrics_epoch"
-				case cfg.NATS.Subjects.UILog:
+				case "snn.ui.log.training":
 					evType = "log"
 				default:
 					evType = "other"
 				}
+				// push to ring
+				push(evType, msg.Data)
+				// write SSE
 				w.Write([]byte("event: " + evType + "\n"))
 				w.Write([]byte("data: " + string(msg.Data) + "\n\n"))
 				flusher.Flush()
-				// 缓存
-				ring = append(ring, item{Topic: evType, Data: msg.Data, T: time.Now()})
-				if len(ring) > 200 {
-					ring = ring[len(ring)-200:]
-				}
-			}
-			if r.Context().Err() != nil {
+			case <-notify:
 				return
+			case <-time.After(15 * time.Second):
+				// keep-alive
+				w.Write([]byte(": ping\n\n"))
+				flusher.Flush()
 			}
 		}
 	})
 
-	// 静态 UI
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		b, _ := os.ReadFile("web/index.html")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(b)
+	http.HandleFunc("/api/metrics/recent", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ring)
 	})
+
+	// serve Vue dist
+	dist := "web/ui/dist"
+	index := dist + "/index.html"
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := os.Stat(index); err == nil {
+			http.FileServer(http.Dir(dist)).ServeHTTP(w, r)
+			return
+		}
+		// fallback: hint to build
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte("Build the UI first: cd web/ui && npm i && npm run build\n"))
+	})
+
 	log.Printf("UI/API listening on %s", cfg.UI.Addr)
 	log.Fatal(http.ListenAndServe(cfg.UI.Addr, nil))
 }

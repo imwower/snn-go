@@ -2,6 +2,8 @@ package events
 
 import "time"
 
+func Now() int64 { return time.Now().Unix() }
+
 type TrainInit struct {
 	Dataset   string  `json:"dataset"`
 	Epochs    int     `json:"epochs"`
@@ -49,5 +51,3 @@ type UISysLog struct {
 	Msg   string `json:"msg"`
 	Time  int64  `json:"time_unix"`
 }
-
-func Now() int64 { return time.Now().Unix() }
