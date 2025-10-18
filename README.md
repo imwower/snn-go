@@ -10,8 +10,9 @@
 
 1. **启动 NATS + JetStream**
    ```bash
-   docker run -it --rm -p 4222:4222 -p 8222:8222 nats:2 -js
-   # JetStream 控制台: http://127.0.0.1:8222
+   docker compose up -d
+   # NATS 监控: http://127.0.0.1:8222
+   # NUI 控制台: http://127.0.0.1:31311
    ```
 2. **构建前端（ui-vue）**  
    API 会直接从 `ui-vue/dist` 提供静态资源。
