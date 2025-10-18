@@ -14,8 +14,8 @@
     "dupe_window_sec": 120
   },
   "training": {
-    "dataset": "MNIST",
-    "data_root": ".data/mnist/MNIST/raw",
+    "dataset": "FASHION",
+    "data_root": ".data/fashion/FashionMNIST/raw",
     "epochs": 3,
     "batch_size": 128,
     "timesteps": 10,
@@ -29,7 +29,8 @@
     "kappa_bs": 0.2,
     "kappa_as": 0.2,
     "hidden": 256,
-    "seed": 42
+    "seed": 42,
+    "end_to_end": false
   },
   "model": { "input": 784, "output": 10 },
   "ui": { "addr": ":8000" }

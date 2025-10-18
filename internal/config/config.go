@@ -40,6 +40,7 @@ type Training struct {
 	KappaAS       float64 `json:"kappa_as"`
 	Hidden        int     `json:"hidden"`
 	Seed          int64   `json:"seed"`
+	EndToEnd      bool    `json:"end_to_end"`
 }
 
 type Model struct {

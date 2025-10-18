@@ -1,13 +1,17 @@
 import type { Pinia } from 'pinia';
 import { useUiStore } from './store/ui';
-import type { LogPayload, MetricPayload, SpikePayload } from './types';
+import type { LogPayload, MetricPayload, SocketEnvelope, SpikePayload } from './types';
 
-let source: EventSource | null = null;
+let socket: WebSocket | null = null;
 let reconnectHandle: number | null = null;
 let started = false;
 let storeInstance: ReturnType<typeof useUiStore> | null = null;
+const RECONNECT_DELAY = 1000;
 
-const RECONNECT_DELAY = 1500;
+const wsUrl = () => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+};
 
 const scheduleReconnect = () => {
   if (!started) {
@@ -22,47 +26,8 @@ const scheduleReconnect = () => {
   }, RECONNECT_DELAY);
 };
 
-const ensureNumber = (value: unknown, fallback = 0): number => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  return fallback;
-};
-
-const parseJSON = <T>(raw: string): T | null => {
-  try {
-    return JSON.parse(raw) as T;
-  } catch (err) {
-    console.warn('Failed to parse payload', err);
-    return null;
-  }
-};
-
-const normalizeMetric = (payload: Partial<MetricPayload> & { time_unix?: number; residual?: number; K?: number }): MetricPayload => {
-  const epoch = ensureNumber(payload.epoch, 0);
-  const step = ensureNumber(payload.step, ensureNumber(payload.k, 0));
-  const loss = ensureNumber(payload.loss, 0);
-  const acc = typeof payload.acc === 'number' && Number.isFinite(payload.acc) ? payload.acc : undefined;
-  const residual = typeof payload.residual === 'number' && Number.isFinite(payload.residual) ? payload.residual : undefined;
-  const throughput = typeof payload.throughput === 'number' && Number.isFinite(payload.throughput) ? payload.throughput : undefined;
-  const lr = typeof payload.lr === 'number' && Number.isFinite(payload.lr) ? payload.lr : undefined;
-  const k = typeof payload.k === 'number' && Number.isFinite(payload.k) ? payload.k : undefined;
-
-  return {
-    epoch,
-    step,
-    loss,
-    acc,
-    residual,
-    throughput,
-    lr,
-    k
-  };
-};
-
-const handleMetrics = (payload: MetricPayload, subject: string) => {
+const handleMetrics = (payload: MetricPayload) => {
   storeInstance?.pushMetric(payload);
-  storeInstance?.pushMessage(subject, payload, 'metrics');
   if (storeInstance && storeInstance.status === 'Idle') {
     storeInstance.setStatus('Training');
   }
@@ -70,86 +35,72 @@ const handleMetrics = (payload: MetricPayload, subject: string) => {
 
 const handleSpikes = (payload: SpikePayload) => {
   storeInstance?.pushSpike(payload);
-  storeInstance?.pushMessage('spikes', payload, 'spikes');
   if (storeInstance && storeInstance.status === 'Idle') {
     storeInstance.setStatus('Training');
   }
 };
 
-const handleLog = (payload: { level?: string; msg?: string; message?: string; time_unix?: number; ts?: number }) => {
-  const normalized: LogPayload = {
-    level: (typeof payload.level === 'string' ? payload.level.toUpperCase() : 'INFO') as LogPayload['level'],
-    message: typeof payload.msg === 'string' ? payload.msg : typeof payload.message === 'string' ? payload.message : '',
-    ts:
-      typeof payload.ts === 'number'
-        ? payload.ts
-        : typeof payload.time_unix === 'number'
-          ? payload.time_unix
-          : Date.now() / 1000
-  };
-  storeInstance?.pushLog(normalized);
-  storeInstance?.pushMessage('log', normalized, 'log');
+const handleLog = (payload: LogPayload) => {
+  storeInstance?.pushLog(payload);
+  storeInstance?.pushMessage('log', payload, 'log');
 };
 
-const bindEventHandlers = (es: EventSource) => {
-  es.addEventListener('metrics_batch', (event) => {
-    const payload = parseJSON<MetricPayload & { k?: number; residual?: number }>((event as MessageEvent<string>).data);
-    if (!payload) {
-      return;
-    }
-    handleMetrics(normalizeMetric(payload), 'metrics_batch');
-  });
+const handleEnvelope = (raw: unknown) => {
+  if (!raw || typeof raw !== 'object') {
+    console.warn('Unexpected websocket payload', raw);
+    return;
+  }
 
-  es.addEventListener('metrics_epoch', (event) => {
-    const payload = parseJSON<MetricPayload & { k?: number; residual?: number }>((event as MessageEvent<string>).data);
-    if (!payload) {
-      return;
-    }
-    const metric = normalizeMetric({ ...payload, step: payload.step ?? 0 });
-    handleMetrics(metric, 'metrics_epoch');
-  });
+  const message = raw as Partial<SocketEnvelope> & { type?: string; data?: unknown };
 
-  es.addEventListener('log', (event) => {
-    const payload = parseJSON<{ level?: string; msg?: string; message?: string; time_unix?: number }>((event as MessageEvent<string>).data);
-    if (!payload) {
-      return;
-    }
-    handleLog(payload);
-  });
+  if (message.type === 'metrics') {
+    handleMetrics(message.data as MetricPayload);
+    storeInstance?.pushMessage('metrics', message.data, 'metrics');
+    return;
+  }
 
-  es.addEventListener('spikes', (event) => {
-    const payload = parseJSON<SpikePayload>((event as MessageEvent<string>).data);
-    if (!payload) {
-      return;
-    }
-    handleSpikes(payload);
-  });
+  if (message.type === 'spikes') {
+    handleSpikes(message.data as SpikePayload);
+    storeInstance?.pushMessage('spikes', message.data, 'spikes');
+    return;
+  }
+
+  if (message.type === 'log') {
+    handleLog(message.data as LogPayload);
+    return;
+  }
+
+  console.warn('Unknown websocket message type', message);
 };
 
 const connect = () => {
   if (!storeInstance) {
     return;
   }
-
-  if (source) {
-    source.close();
-    source = null;
-  }
-
   try {
-    source = new EventSource('/events');
+    socket = new WebSocket(wsUrl());
   } catch (err) {
-    console.warn('Failed to open SSE channel', err);
+    console.warn('Failed to open websocket', err);
     scheduleReconnect();
     return;
   }
 
-  bindEventHandlers(source);
+  socket.onmessage = (event: MessageEvent<string>) => {
+    try {
+      const parsed: unknown = JSON.parse(event.data);
+      handleEnvelope(parsed);
+    } catch (err) {
+      console.warn('Failed to parse websocket payload', err);
+    }
+  };
 
-  source.onerror = (err) => {
-    console.warn('EventSource error', err);
-    source?.close();
+  socket.onclose = () => {
     scheduleReconnect();
+  };
+
+  socket.onerror = (err) => {
+    console.warn('WebSocket error', err);
+    socket?.close();
   };
 };
 
@@ -162,4 +113,4 @@ export const startSocket = (pinia: Pinia) => {
   connect();
 };
 
-export const getSocket = () => source;
+export const getSocket = () => socket;

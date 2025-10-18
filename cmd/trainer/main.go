@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-	"math/rand"
+	"math"
 	"time"
 
 	"github.com/imwower/snn-go/internal/config"
@@ -26,7 +26,7 @@ func main() {
 	}
 	defer bus.Close()
 
-	// init event
+	// init 事件
 	_ = bus.PublishJSON(cfg.NATS.Subjects.TrainInit,
 		natsbus.MsgID("init-", time.Now().UnixNano()),
 		events.TrainInit{
@@ -35,8 +35,13 @@ func main() {
 			Hidden: cfg.Training.Hidden, LR: cfg.Training.LR, Time: events.Now(),
 		})
 
-	ld, _ := data.NewLoaderMNIST(cfg.Training.DataRoot, cfg.Training.BatchSize, cfg.Training.Seed)
+	// 数据集：MNIST/FASHION/SYNTH 自动选择
+	ld, err := data.NewLoader(cfg.Training.Dataset, cfg.Training.DataRoot, cfg.Training.BatchSize, cfg.Training.Seed)
+	if err != nil {
+		log.Printf("data loader: %v", err)
+	}
 
+	// 模型
 	net := snn.NewThreeCompNet(
 		cfg.Model.Input, cfg.Training.Hidden, cfg.Model.Output, cfg.Training.Seed,
 		cfg.Training.Theta, cfg.Training.AlphaB, cfg.Training.AlphaA, cfg.Training.AlphaS,
@@ -45,17 +50,10 @@ func main() {
 
 	globalStep := 0
 	for epoch := 1; epoch <= cfg.Training.Epochs; epoch++ {
-		// 固定点近似迭代（演示：随机残差；如需严格可计算 ||v^{t+1}-v^t||/||v^t||）
-		for k := 1; k <= cfg.Training.FixedPointK; k++ {
-			residual := rand.Float64() * 0.01
-			_ = bus.PublishJSON(cfg.NATS.Subjects.TrainIter,
-				natsbus.MsgID("fpt-", epoch, "-", k, "-", time.Now().UnixNano()),
-				events.FPTRound{Epoch: epoch, Step: globalStep, K: k, Residual: residual, Time: events.Now()},
-			)
-		}
 
 		var sumLoss, sumAcc float64
 		var steps int
+
 		for {
 			b, ok := ld.Next()
 			if !ok {
@@ -64,8 +62,24 @@ func main() {
 			steps++
 			globalStep++
 
+			// —— 固定时间步前向 —— //
 			logits, cache := net.Forward(b.X, cfg.Training.Timesteps)
-			loss, acc := net.BackpropReadout(cache, b.X, logits, b.Y, cfg.Training.LR)
+
+			// —— FPT 残差（真实计算）：以 Vs 时间序列做 ||v^t - v^{t-1}|| / (||v^{t-1}||+ε) 的 batch 均值 —— //
+			residual := residualFromCache(cache)
+
+			_ = bus.PublishJSON(cfg.NATS.Subjects.TrainIter,
+				natsbus.MsgID("fpt-", epoch, "-", steps, "-", time.Now().UnixNano()),
+				events.FPTRound{Epoch: epoch, Step: steps, K: 1, Residual: residual, Time: events.Now()},
+			)
+
+			// —— 反向（默认仅读出层） —— //
+			var loss, acc float64
+			if cfg.Training.EndToEnd {
+				loss, acc = net.BackpropFullSTE(cache, b.X, logits, b.Y, cfg.Training.LR)
+			} else {
+				loss, acc = net.BackpropReadout(cache, b.X, logits, b.Y, cfg.Training.LR)
+			}
 
 			sumLoss += loss
 			sumAcc += acc
@@ -74,18 +88,18 @@ func main() {
 				natsbus.MsgID("mb-", epoch, "-", steps),
 				events.MetricsBatch{Epoch: epoch, Step: steps, Loss: loss, Acc: acc, Time: events.Now()},
 			)
-
 			_ = bus.PublishJSON(cfg.NATS.Subjects.UILog,
 				natsbus.MsgID("log-", epoch, "-", steps),
 				events.UISysLog{
 					Level: "INFO",
-					Msg:   fmt.Sprintf("epoch=%d step=%d loss=%.4f acc=%.4f", epoch, steps, loss, acc),
+					Msg:   fmt.Sprintf("epoch=%d step=%d loss=%.4f acc=%.4f residual=%.6f", epoch, steps, loss, acc, residual),
 					Time:  events.Now(),
 				},
 			)
 		}
-		epochLoss := sumLoss / float64(steps)
-		epochAcc := sumAcc / float64(steps)
+
+		epochLoss := sumLoss / math.Max(1, float64(steps))
+		epochAcc := sumAcc / math.Max(1, float64(steps))
 
 		_ = bus.PublishJSON(cfg.NATS.Subjects.MetricsEpoch,
 			natsbus.MsgID("me-", epoch),
@@ -101,4 +115,32 @@ func main() {
 		natsbus.MsgID("log-done-", time.Now().UnixNano()),
 		events.UISysLog{Level: "INFO", Msg: "training finished", Time: events.Now()},
 	)
+}
+
+// residualFromCache: 步间差分残差（FPT 近似）
+// r = mean_{t=1..T-1} ||v_s^t - v_s^{t-1}||_2 / (||v_s^{t-1}||_2 + 1e-8)
+// 若已保留 F(v)-v，可替换为函数残差测度，两者在离散一阶迭代下等价。
+func residualFromCache(c snn.ForwardCache) float64 {
+	if len(c.Vs) <= 1 {
+		return 0
+	}
+	T := len(c.Vs)
+	BH := len(c.Vs[0])
+	var sum float64
+	var cnt int
+	for t := 1; t < T; t++ {
+		var num, den float64
+		for i := 0; i < BH; i++ {
+			d := c.Vs[t][i] - c.Vs[t-1][i]
+			num += d * d
+			den += c.Vs[t-1][i] * c.Vs[t-1][i]
+		}
+		r := math.Sqrt(num) / (math.Sqrt(den) + 1e-8)
+		sum += r
+		cnt++
+	}
+	if cnt == 0 {
+		return 0
+	}
+	return sum / float64(cnt)
 }

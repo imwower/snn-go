@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -17,88 +18,97 @@ type ringItem struct {
 	T     int64           `json:"time_unix"`
 }
 
+type wsEnvelope struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
 func main() {
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
 
-	// in-memory ring for recent metrics
+	// WebSocket Hub
+	hub := newHub()
+	go hub.run()
+
+	// /ws：WebSocket 实时推送
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		serveWS(hub, w, r)
+	})
+
+	// /api/config：提供配置（仅标准库 json）
+	http.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(cfg)
+	})
+
+	// 最近指标（可选）
 	ring := make([]ringItem, 0, 200)
-	push := func(topic string, b []byte) {
-		ring = append(ring, ringItem{Topic: topic, Data: append([]byte(nil), b...), T: time.Now().Unix()})
+	pushRing := func(topic string, data []byte) {
+		ring = append(ring, ringItem{Topic: topic, Data: append([]byte(nil), data...), T: time.Now().Unix()})
 		if len(ring) > 200 {
 			ring = ring[len(ring)-200:]
 		}
 	}
-
-	// SSE endpoint
-	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "no flusher", http.StatusInternalServerError)
-			return
-		}
-
-		nc, err := nats.Connect(cfg.NATS.URL)
-		if err != nil {
-			http.Error(w, "nats connect failed", http.StatusInternalServerError)
-			return
-		}
-		defer nc.Drain()
-
-		ch := make(chan *nats.Msg, 256)
-		subjects := []string{
-			"snn.metrics.batch",
-			"snn.metrics.epoch",
-			"snn.ui.log.training",
-		}
-		for _, s := range subjects {
-			if _, err := nc.ChanSubscribe(s, ch); err != nil {
-				log.Printf("subscribe %s: %v", s, err)
-			}
-		}
-		notify := r.Context().Done()
-
-		for {
-			select {
-			case msg := <-ch:
-				var evType string
-				switch msg.Subject {
-				case "snn.metrics.batch":
-					evType = "metrics_batch"
-				case "snn.metrics.epoch":
-					evType = "metrics_epoch"
-				case "snn.ui.log.training":
-					evType = "log"
-				default:
-					evType = "other"
-				}
-				// push to ring
-				push(evType, msg.Data)
-				// write SSE
-				w.Write([]byte("event: " + evType + "\n"))
-				w.Write([]byte("data: " + string(msg.Data) + "\n\n"))
-				flusher.Flush()
-			case <-notify:
-				return
-			case <-time.After(15 * time.Second):
-				// keep-alive
-				w.Write([]byte(": ping\n\n"))
-				flusher.Flush()
-			}
-		}
-	})
-
 	http.HandleFunc("/api/metrics/recent", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ring)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(ring)
 	})
 
-	// serve Vue dist
+	// JetStream Durable + Pull + ACK：三个主题分别创建 Durable
+	nc, err := nats.Connect(cfg.NATS.URL)
+	if err != nil {
+		log.Fatalf("nats connect: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		log.Fatalf("jetstream: %v", err)
+	}
+
+	type subSpec struct {
+		Subj    string
+		Durable string
+		Typ     string
+	}
+	specs := []subSpec{
+		{cfg.NATS.Subjects.MetricsBatch, "UI_BATCH", "metrics_batch"},
+		{cfg.NATS.Subjects.MetricsEpoch, "UI_EPOCH", "metrics_epoch"},
+		{cfg.NATS.Subjects.UILog, "UI_LOG", "log"},
+	}
+
+	for _, sp := range specs {
+		sub, err := js.PullSubscribe(sp.Subj, sp.Durable, nats.BindStream(cfg.NATS.Stream))
+		if err != nil {
+			log.Fatalf("pull subscribe %s: %v", sp.Subj, err)
+		}
+		// 每个主题起一个拉取协程
+		go func(s *nats.Subscription, typ string) {
+			for {
+				// 批量拉取 + ACK
+				ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+				msgs, err := s.Fetch(64, nats.Context(ctx))
+				cancel()
+				if err != nil && err != nats.ErrTimeout {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				for _, m := range msgs {
+					env := wsEnvelope{Type: typ, Data: json.RawMessage(m.Data)}
+					b, _ := json.Marshal(&env)
+					hub.broadcast <- b
+					pushRing(typ, m.Data)
+					_ = m.Ack() // 及时 ACK，避免积压
+				}
+				if len(msgs) == 0 {
+					time.Sleep(200 * time.Millisecond) // 空轮询退避
+				}
+			}
+		}(sub, sp.Typ)
+	}
+
+	// 静态前端：ui-vue/dist
 	dist := "ui-vue/dist"
 	index := dist + "/index.html"
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -106,11 +116,10 @@ func main() {
 			http.FileServer(http.Dir(dist)).ServeHTTP(w, r)
 			return
 		}
-		// fallback: hint to build
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("Build the UI first: cd ui-vue && npm i && npm run build\n"))
+		w.Write([]byte("Build UI first: cd ui-vue && npm i && npm run build\n"))
 	})
 
-	log.Printf("UI/API listening on %s", cfg.UI.Addr)
+	log.Printf("WebSocket/API listening on %s", cfg.UI.Addr)
 	log.Fatal(http.ListenAndServe(cfg.UI.Addr, nil))
 }

@@ -1,2 +1,5 @@
 .idea
 /ui-vue/node_modules/
+/ui-vue/dist/
+/.data/nats/
+/.data/nui/

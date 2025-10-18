@@ -50,6 +50,23 @@ type ForwardCache struct {
 	S  [][]float64
 }
 
+// NOTE: FPT Residuals & STE-BPTT (summary)
+// Residual rΔ(t) = ||v_s^t - v_s^{t-1}||_2 / (||v_s^{t-1}||_2 + eps), averaged over t=1..T-1.
+// Surrogate derivative for spikes: dH/dx ≈ ψγ(x) = max(0, 1-|x|/γ)/γ.
+// dv_s^{t+1}/du_s^{t+1} ≈ I - θ ψγ(u_s^{t+1}-θ) := G^{t+1}.
+// Time-backprop skeleton:
+//
+//	δ_s^t_init = (p - y_onehot) W_out^T   // same for all t due to Σ_t
+//	δ_u^{t+1} = δ_s^{t+1} ⊙ G^{t+1}
+//	δ_s^{t}  += (1-α_s) δ_u^{t+1}
+//
+// Parameter grads:
+//
+//	dL/dW_out  += (p - y) ⊗ Σ_t v_s^t
+//	dL/dW_b2s  += (v_b^{t+1})^T δ_u^{t+1};   dL/dW_a2s += (v_a^{t+1})^T δ_u^{t+1}
+//	dL/dW_in   ≈  x^T (δ_u^{t+1} W_b2s^T)    // ignoring higher-order couplings for brevity
+//
+// For stability: clip grads, γ∈[0.1,0.3], small LR. End-to-end switch can be added if needed.
 func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache ForwardCache) {
 	B, H, O := len(x), m.Hidden, m.Output
 	cache.Vb = make([][]float64, T)
@@ -137,6 +154,7 @@ func heaviside(x float64) int {
 	return 0
 }
 
+// NOTE: See STE-BPTT summary above for gradient skeleton applied in readout updates.
 func softmaxCE(logits []float64, y int) (loss float64, probs []float64) {
 	maxv := -1e30
 	for _, v := range logits {
@@ -202,4 +220,13 @@ func b2f(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// BackpropFullSTE：端到端近似反传骨架（默认不用）
+// 建议通过配置开关控制是否启用
+func (m *ThreeCompNet) BackpropFullSTE(cache ForwardCache, x [][]float64, logits [][]float64, y []int, lr float64) (float64, float64) {
+	// TODO: 基于 cache.Vs/Vb/Va 的时间回放，使用三角 surrogate dH/dx ≈ max(0, 1-|x|/γ)/γ
+	// 本骨架为占位，保持函数签名，便于后续补齐
+	// 先退化为读出层更新
+	return m.BackpropReadout(cache, x, logits, y, lr)
 }

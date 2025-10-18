@@ -3,6 +3,8 @@
   <component name="Go" enabled="true" />
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/.data/nats" />
+      <excludeFolder url="file://$MODULE_DIR$/.data/nui" />
       <excludeFolder url="file://$MODULE_DIR$/ui-vue/.idea" />
     </content>
     <orderEntry type="inheritedJdk" />
