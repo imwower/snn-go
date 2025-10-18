@@ -16,17 +16,17 @@ import (
 func main() {
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatalf("加载配置失败：%v", err)
 	}
 	bus, err := natsbus.Connect(natsbus.StreamConfig{
 		Stream: cfg.NATS.Stream, URL: cfg.NATS.URL, DupeWindowSec: cfg.NATS.DupeWindowSec,
 	})
 	if err != nil {
-		log.Fatalf("nats: %v", err)
+		log.Fatalf("连接 NATS 失败：%v", err)
 	}
 	defer bus.Close()
 
-	// init 事件
+	// 初始化事件
 	_ = bus.PublishJSON(cfg.NATS.Subjects.TrainInit,
 		natsbus.MsgID("init-", time.Now().UnixNano()),
 		events.TrainInit{
@@ -38,7 +38,7 @@ func main() {
 	// 数据集：MNIST/FASHION/SYNTH 自动选择
 	ld, err := data.NewLoader(cfg.Training.Dataset, cfg.Training.DataRoot, cfg.Training.BatchSize, cfg.Training.Seed)
 	if err != nil {
-		log.Printf("data loader: %v", err)
+		log.Printf("数据加载器异常：%v", err)
 	}
 
 	// 模型
@@ -92,7 +92,7 @@ func main() {
 				natsbus.MsgID("log-", epoch, "-", steps),
 				events.UISysLog{
 					Level: "INFO",
-					Msg:   fmt.Sprintf("epoch=%d step=%d loss=%.4f acc=%.4f residual=%.6f", epoch, steps, loss, acc, residual),
+					Msg:   fmt.Sprintf("轮次=%d 步数=%d 损失=%.4f 准确率=%.4f 残差=%.6f", epoch, steps, loss, acc, residual),
 					Time:  events.Now(),
 				},
 			)
@@ -113,11 +113,11 @@ func main() {
 
 	_ = bus.PublishJSON(cfg.NATS.Subjects.UILog,
 		natsbus.MsgID("log-done-", time.Now().UnixNano()),
-		events.UISysLog{Level: "INFO", Msg: "training finished", Time: events.Now()},
+		events.UISysLog{Level: "INFO", Msg: "训练已完成", Time: events.Now()},
 	)
 }
 
-// residualFromCache: 步间差分残差（FPT 近似）
+// residualFromCache：步间差分残差（FPT 近似）
 // r = mean_{t=1..T-1} ||v_s^t - v_s^{t-1}||_2 / (||v_s^{t-1}||_2 + 1e-8)
 // 若已保留 F(v)-v，可替换为函数残差测度，两者在离散一阶迭代下等价。
 func residualFromCache(c snn.ForwardCache) float64 {

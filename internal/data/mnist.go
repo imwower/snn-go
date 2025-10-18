@@ -14,7 +14,7 @@ import (
 
 type Batch struct {
 	X [][]float64 // [B][784] 归一化像素 0..1
-	Y []int       // [B] 类别 id
+	Y []int       // [B] 类别编号
 }
 
 type Loader struct {
@@ -37,7 +37,7 @@ func NewLoaderMNIST(root string, bs int, seed int64) (*Loader, error) {
 	}
 	// 若失败则回退到合成数据
 	if len(img) == 0 || len(lb) == 0 {
-		log.Printf("mnist: dataset missing under %s, falling back to synthetic data", root)
+		log.Printf("mnist：%s 缺少数据集，回退到合成数据", root)
 		return synth(bs, seed), nil
 	}
 
@@ -57,7 +57,7 @@ func NewLoaderMNIST(root string, bs int, seed int64) (*Loader, error) {
 	for i := 0; i < n; i++ {
 		labels[i] = int(lb[i])
 	}
-	log.Printf("mnist: loaded %d samples from %s", n, root)
+	log.Printf("mnist：已从 %s 载入 %d 条样本", root, n)
 	ld := &Loader{images: images, labels: labels, bs: bs, seed: seed}
 	ld.reset()
 	return ld, nil

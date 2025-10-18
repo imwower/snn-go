@@ -62,7 +62,7 @@ var upgrader = websocket.Upgrader{
 func serveWS(h *wsHub, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("ws upgrade: %v", err)
+		log.Printf("WebSocket 升级失败：%v", err)
 		return
 	}
 	c := &wsClient{hub: h, conn: conn, send: make(chan []byte, 1024)}

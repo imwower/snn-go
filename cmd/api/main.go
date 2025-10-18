@@ -26,10 +26,10 @@ type wsEnvelope struct {
 func main() {
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatalf("加载配置失败：%v", err)
 	}
 
-	// WebSocket Hub
+	// WebSocket 中心
 	hub := newHub()
 	go hub.run()
 
@@ -38,7 +38,7 @@ func main() {
 		serveWS(hub, w, r)
 	})
 
-	// /api/config：提供配置（仅标准库 json）
+	// /api/config：提供配置（仅用标准库 JSON 编码）
 	http.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(cfg)
@@ -57,14 +57,14 @@ func main() {
 		_ = json.NewEncoder(w).Encode(ring)
 	})
 
-	// JetStream Durable + Pull + ACK：三个主题分别创建 Durable
+	// JetStream Durable + Pull + ACK：为三个主题分别创建持久订阅
 	nc, err := nats.Connect(cfg.NATS.URL)
 	if err != nil {
-		log.Fatalf("nats connect: %v", err)
+		log.Fatalf("连接 NATS 失败：%v", err)
 	}
 	js, err := nc.JetStream()
 	if err != nil {
-		log.Fatalf("jetstream: %v", err)
+		log.Fatalf("初始化 JetStream 失败：%v", err)
 	}
 
 	type subSpec struct {
@@ -81,7 +81,7 @@ func main() {
 	for _, sp := range specs {
 		sub, err := js.PullSubscribe(sp.Subj, sp.Durable, nats.BindStream(cfg.NATS.Stream))
 		if err != nil {
-			log.Fatalf("pull subscribe %s: %v", sp.Subj, err)
+			log.Fatalf("订阅 %s 时出错：%v", sp.Subj, err)
 		}
 		// 每个主题起一个拉取协程
 		go func(s *nats.Subscription, typ string) {
@@ -120,6 +120,6 @@ func main() {
 		w.Write([]byte("Build UI first: cd ui-vue && npm i && npm run build\n"))
 	})
 
-	log.Printf("WebSocket/API listening on %s", cfg.UI.Addr)
+	log.Printf("WebSocket/API 服务监听于 %s", cfg.UI.Addr)
 	log.Fatal(http.ListenAndServe(cfg.UI.Addr, nil))
 }

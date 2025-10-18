@@ -8,10 +8,10 @@ import (
 type ThreeCompNet struct {
 	Input, Hidden, Output int
 
-	W_in  [][]float64 // [input][hidden]
-	W_b2s [][]float64 // [hidden][hidden]
-	W_a2s [][]float64 // [hidden][hidden]
-	W_out [][]float64 // [hidden][output]
+	W_in  [][]float64 // [输入][隐藏]
+	W_b2s [][]float64 // [隐藏][隐藏]
+	W_a2s [][]float64 // [隐藏][隐藏]
+	W_out [][]float64 // [隐藏][输出]
 	B_out []float64
 
 	Theta                  float64
@@ -50,23 +50,23 @@ type ForwardCache struct {
 	S  [][]float64
 }
 
-// NOTE: FPT Residuals & STE-BPTT (summary)
-// Residual rΔ(t) = ||v_s^t - v_s^{t-1}||_2 / (||v_s^{t-1}||_2 + eps), averaged over t=1..T-1.
-// Surrogate derivative for spikes: dH/dx ≈ ψγ(x) = max(0, 1-|x|/γ)/γ.
-// dv_s^{t+1}/du_s^{t+1} ≈ I - θ ψγ(u_s^{t+1}-θ) := G^{t+1}.
-// Time-backprop skeleton:
+// 说明：FPT 残差与 STE-BPTT（摘要）
+// 残差 rΔ(t) = ||v_s^t - v_s^{t-1}||_2 / (||v_s^{t-1}||_2 + eps)，对 t=1..T-1 取平均。
+// 脉冲的代理导数：dH/dx ≈ ψγ(x) = max(0, 1-|x|/γ)/γ。
+// dv_s^{t+1}/du_s^{t+1} ≈ I - θ ψγ(u_s^{t+1}-θ) := G^{t+1}。
+// 时间反向传播骨架：
 //
-//	δ_s^t_init = (p - y_onehot) W_out^T   // same for all t due to Σ_t
+//	δ_s^t_init = (p - y_onehot) W_out^T   // 由于 Σ_t，对所有 t 相同
 //	δ_u^{t+1} = δ_s^{t+1} ⊙ G^{t+1}
 //	δ_s^{t}  += (1-α_s) δ_u^{t+1}
 //
-// Parameter grads:
+// 参数梯度：
 //
 //	dL/dW_out  += (p - y) ⊗ Σ_t v_s^t
 //	dL/dW_b2s  += (v_b^{t+1})^T δ_u^{t+1};   dL/dW_a2s += (v_a^{t+1})^T δ_u^{t+1}
-//	dL/dW_in   ≈  x^T (δ_u^{t+1} W_b2s^T)    // ignoring higher-order couplings for brevity
+//	dL/dW_in   ≈  x^T (δ_u^{t+1} W_b2s^T)    // 为简洁起见忽略高阶耦合
 //
-// For stability: clip grads, γ∈[0.1,0.3], small LR. End-to-end switch can be added if needed.
+// 稳定性建议：执行梯度裁剪，γ∈[0.1,0.3]，学习率保持较小；必要时再补充端到端开关。
 func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache ForwardCache) {
 	B, H, O := len(x), m.Hidden, m.Output
 	cache.Vb = make([][]float64, T)
@@ -84,13 +84,13 @@ func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache 
 	va := make([]float64, B*H)
 	vs := make([]float64, B*H)
 
-	agg := make([][]float64, B) // Σ_t vs · W_out
+	agg := make([][]float64, B) // Σ_t vs · W_out 的累积量
 	for b := 0; b < B; b++ {
 		agg[b] = make([]float64, O)
 	}
 
 	for t := 0; t < T; t++ {
-		// basal
+		// 基底树突
 		for b := 0; b < B; b++ {
 			for h := 0; h < H; h++ {
 				idx := b*H + h
@@ -101,14 +101,14 @@ func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache 
 				vb[idx] = (1-m.AlphaB)*vb[idx] + sumIn + m.KappaBS*(vs[idx]-vb[idx])
 			}
 		}
-		// apical
+		// 顶树突
 		for b := 0; b < B; b++ {
 			for h := 0; h < H; h++ {
 				idx := b*H + h
 				va[idx] = (1-m.AlphaA)*va[idx] + m.KappaAS*(vs[idx]-va[idx])
 			}
 		}
-		// soma + spike
+		// 细胞体与放电
 		for b := 0; b < B; b++ {
 			for h := 0; h < H; h++ {
 				idx := b*H + h
@@ -136,7 +136,7 @@ func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache 
 			}
 		}
 	}
-	// logits = Σ_t vs·W_out + b
+	// 输出 logits = Σ_t vs·W_out + b
 	logits = make([][]float64, B)
 	for b := 0; b < B; b++ {
 		logits[b] = make([]float64, O)
@@ -154,7 +154,7 @@ func heaviside(x float64) int {
 	return 0
 }
 
-// NOTE: See STE-BPTT summary above for gradient skeleton applied in readout updates.
+// 提示：读出层梯度仍沿用前述 STE-BPTT 摘要。
 func softmaxCE(logits []float64, y int) (loss float64, probs []float64) {
 	maxv := -1e30
 	for _, v := range logits {
@@ -193,7 +193,7 @@ func (m *ThreeCompNet) BackpropReadout(cache ForwardCache, x [][]float64, logits
 	for b := 0; b < B; b++ {
 		loss, probs := softmaxCE(logits[b], y[b])
 		batchLoss += loss
-		// acc
+		// 计算准确率
 		arg := 0
 		for o := 1; o < O; o++ {
 			if probs[o] > probs[arg] {
