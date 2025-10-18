@@ -99,7 +99,7 @@ func main() {
 	})
 
 	// serve Vue dist
-	dist := "web/ui/dist"
+	dist := "ui-vue/dist"
 	index := dist + "/index.html"
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := os.Stat(index); err == nil {
@@ -108,7 +108,7 @@ func main() {
 		}
 		// fallback: hint to build
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("Build the UI first: cd web/ui && npm i && npm run build\n"))
+		w.Write([]byte("Build the UI first: cd ui-vue && npm i && npm run build\n"))
 	})
 
 	log.Printf("UI/API listening on %s", cfg.UI.Addr)

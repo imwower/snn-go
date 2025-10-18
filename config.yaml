@@ -14,7 +14,7 @@
     "dupe_window_sec": 120
   },
   "training": {
-    "dataset": "MNIST",              // "MNIST" | "FASHION" | "SYNTH"
+    "dataset": "MNIST",
     "data_root": ".data/mnist/MNIST/raw",
     "epochs": 3,
     "batch_size": 128,
