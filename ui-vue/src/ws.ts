@@ -61,7 +61,7 @@ const handleSysLog = (payload: UISysLogEvent) => {
 const handleTrainInit = (payload: TrainInitEvent) => {
   console.log('[UI] train_init', payload);
   const text = `[INIT] dataset=${payload.dataset ?? '-'} epochs=${payload.epochs ?? '-'} batch=${payload.batch_size ?? '-'} T=${payload.timesteps ?? '-'} K=${payload.fixed_point_K ?? '-'} lr=${payload.lr ?? '-'}`;
-  storeInstance?.setStatus('Initializing');
+  storeInstance?.setStatus('Idle');
   if (storeInstance) {
     const current = storeInstance.cfg;
     storeInstance.setCfg({
