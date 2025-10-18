@@ -1,15 +1,21 @@
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'logs-open': showLogs }">
     <div class="content-row">
       <Sidebar class="sidebar" />
-      <Network3D class="network-view" />
-    </div>
-    <StatusBar class="status-bar" />
-    <div class="logs-wrapper">
-      <button class="logs-toggle" type="button" @click="toggleLogs">
-        {{ showLogs ? '隐藏日志' : '显示日志' }}
-      </button>
-      <LogsPanel v-if="showLogs" />
+      <div class="main-area">
+        <Network3D class="network-view" />
+        <StatusBar
+          class="status-bar"
+          :class="{ expanded: showLogs }"
+          :show-logs="showLogs"
+          @toggle-logs="toggleLogs"
+        />
+        <transition name="logs-overlay">
+          <div v-if="showLogs" class="logs-overlay">
+            <LogsPanel />
+          </div>
+        </transition>
+      </div>
     </div>
     <Toast />
   </div>

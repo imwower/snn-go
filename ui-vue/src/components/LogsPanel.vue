@@ -12,8 +12,9 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import { useUiStore } from '../store/ui';
 
+const LOG_LIMIT = 6;
 const store = useUiStore();
-const logs = computed(() => store.logs);
+const logs = computed(() => store.logs.slice(-LOG_LIMIT));
 const container = ref<HTMLDivElement | null>(null);
 
 const pad = (value: number) => value.toString().padStart(2, '0');

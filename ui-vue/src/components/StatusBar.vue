@@ -21,9 +21,14 @@
       <span>Throughput: {{ metric.throughput }}</span>
       <span>Residual: {{ metric.residual }}</span>
     </div>
-    <div class="message-pill">
-      <strong>{{ message.subject }}</strong>
-      <span>{{ message.summary }}</span>
+    <div class="message-area">
+      <div class="message-pill">
+        <strong>{{ message.subject }}</strong>
+        <span>{{ message.summary }}</span>
+      </div>
+      <button class="logs-toggle" type="button" @click="handleToggleLogs">
+        {{ logsButtonLabel }}
+      </button>
     </div>
   </footer>
 </template>
@@ -32,10 +37,17 @@
 import { computed } from 'vue';
 import { useUiStore } from '../store/ui';
 
+const props = defineProps<{
+  showLogs: boolean;
+}>();
+
+const emit = defineEmits<{
+  (event: 'toggle-logs'): void;
+}>();
+
 const store = useUiStore();
 
 const status = computed(() => store.status);
-
 const statusClass = computed(() => `status-${status.value.toLowerCase()}`);
 
 const formatNumber = (value: number | undefined, digits: number) =>
@@ -71,9 +83,7 @@ const sparkPoints = computed(() => {
   if (entries.length < 2) {
     return '';
   }
-  const values = entries.map((entry) => (
-    typeof entry.loss === 'number' ? entry.loss : 0
-  ));
+  const values = entries.map((entry) => (typeof entry.loss === 'number' ? entry.loss : 0));
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
@@ -107,4 +117,7 @@ const message = computed(() => {
     summary: `${last.message} · ${time}`
   };
 });
+
+const logsButtonLabel = computed(() => (props.showLogs ? '隐藏日志' : '显示日志'));
+const handleToggleLogs = () => emit('toggle-logs');
 </script>
