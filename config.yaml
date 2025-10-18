@@ -1,0 +1,41 @@
+{
+  "nats": {
+    "url": "nats://127.0.0.1:4222",
+    "stream": "SNN_EVENTS",
+    "subjects": {
+      "metrics_batch": "snn.metrics.batch",
+      "metrics_epoch": "snn.metrics.epoch",
+      "train_init": "snn.train.init",
+      "train_iter": "snn.train.fpt.iter",
+      "params_apply": "snn.params.apply",
+      "params_snap": "snn.params.snap",
+      "ui_log": "snn.ui.log.training"
+    },
+    "dupe_window_sec": 120
+  },
+  "training": {
+    "dataset": "MNIST",              // "MNIST" | "FASHION" | "SYNTH"
+    "data_root": ".data/mnist/MNIST/raw",
+    "epochs": 3,
+    "batch_size": 128,
+    "timesteps": 10,
+    "fixed_point_K": 3,
+    "fixed_point_tol": 0.001,
+    "lr": 0.001,
+    "theta": 1.0,
+    "alpha_b": 0.05,
+    "alpha_a": 0.05,
+    "alpha_s": 0.1,
+    "kappa_bs": 0.2,
+    "kappa_as": 0.2,
+    "hidden": 256,
+    "seed": 42
+  },
+  "model": {
+    "input": 784,
+    "output": 10
+  },
+  "ui": {
+    "addr": ":8000"   // api + sse + static
+  }
+}
