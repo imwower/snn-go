@@ -64,6 +64,25 @@ body {
   width: 100%;
 }
 
+.buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.buttons button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.buttons .train-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
 .main-area {
   flex: 1;
   display: flex;

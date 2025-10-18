@@ -14,7 +14,7 @@
           {{ downloadButtonText }}
         </button>
       </section>
-      <fieldset>
+      <fieldset :disabled="parametersLocked">
         <legend>训练参数</legend>
         <label>
           <span>network_size</span>
@@ -44,9 +44,11 @@
       </fieldset>
     </div>
     <div class="buttons">
-      <button @click="initTraining" :disabled="controlsLocked">初始化</button>
-      <button @click="startTraining" :disabled="controlsLocked">训练</button>
-      <button @click="stopTraining" :disabled="controlsLocked">停止</button>
+      <button @click="initTraining" :disabled="initDisabled">初始化</button>
+      <button @click="toggleTraining" :disabled="trainButtonDisabled">
+        <span class="train-icon">{{ trainButtonIcon }}</span>
+        {{ trainButtonLabel }}
+      </button>
     </div>
   </aside>
 </template>
@@ -75,6 +77,7 @@ const DEFAULT_DATASETS: DatasetOption[] = [
 const datasetOptions = ref<DatasetOption[]>(ensureDefaultDatasets([{ value: store.cfg.dataset, label: store.cfg.dataset }]));
 const isBusy = ref(false);
 
+const isTraining = computed(() => store.status === 'Training');
 const dataset = computed({
   get: () => store.cfg.dataset,
   set: (value: DatasetName) => store.setDataset(value)
@@ -102,6 +105,9 @@ const tol = computed({
 
 const downloadLocked = computed(() => store.isDownloadActive || isBusy.value);
 const controlsLocked = computed(() => isBusy.value || store.isControlLocked);
+const parametersLocked = computed(() => isBusy.value || isTraining.value);
+const initDisabled = computed(() => controlsLocked.value || isTraining.value);
+const trainButtonDisabled = computed(() => isBusy.value || store.status === 'Initializing');
 const downloadPercentText = computed(() => `${store.downloadPercent}%`);
 const downloadButtonText = computed(() => {
   if (store.isDownloadActive) {
@@ -111,6 +117,8 @@ const downloadButtonText = computed(() => {
   }
   return '下载到本地';
 });
+const trainButtonIcon = computed(() => (isTraining.value ? '■' : '▶'));
+const trainButtonLabel = computed(() => (isTraining.value ? '停止' : '训练'));
 
 const withBusy = async (task: () => Promise<void>, opts: { allowWhenDownloading?: boolean } = {}) => {
   if (isBusy.value) {
@@ -207,6 +215,14 @@ const stopTraining = () =>
       store.showToast('停止训练失败', 'error');
     }
   });
+
+const toggleTraining = () => {
+  if (isTraining.value) {
+    void stopTraining();
+  } else {
+    void startTraining();
+  }
+};
 
 function normalizeDatasetList(payload: unknown): DatasetOption[] {
   const result: DatasetOption[] = [];
