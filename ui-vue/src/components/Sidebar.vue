@@ -41,6 +41,11 @@
           <input type="number" step="0.000001" v-model.number="tol" />
           <span class="hint">容差阈值控制停止条件，越小越精准但耗时更久。</span>
         </label>
+        <label>
+          <span>epochs</span>
+          <input type="number" min="1" v-model.number="epochs" />
+          <span class="hint">训练轮次数量，通常 3~10 可观察收敛趋势。</span>
+        </label>
       </fieldset>
     </div>
     <div class="buttons">
@@ -101,6 +106,10 @@ const K = computed({
 const tol = computed({
   get: () => store.cfg.tol,
   set: (value: number) => store.setCfg({ tol: value })
+});
+const epochs = computed({
+  get: () => store.cfg.epochs,
+  set: (value: number) => store.setCfg({ epochs: value })
 });
 
 const downloadLocked = computed(() => store.isDownloadActive || isBusy.value);
@@ -185,7 +194,8 @@ const initTraining = () =>
         lr: store.cfg.lr,
         K: store.cfg.K,
         tol: store.cfg.tol,
-        T: store.cfg.T
+        T: store.cfg.T,
+        epochs: store.cfg.epochs
       });
     } catch (err) {
       console.warn('Init failed', err);

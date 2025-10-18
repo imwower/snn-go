@@ -19,7 +19,7 @@ export interface DatasetListPayload {
   installed?: DatasetName[];
 }
 
-export type TrainingStatus = 'Idle' | 'Initializing' | 'Training' | 'Stopped';
+export type TrainingStatus = 'Idle' | 'Initializing' | 'Training' | 'Stopped' | 'Error';
 
 export interface TrainingConfig {
   dataset: DatasetName;
@@ -30,6 +30,7 @@ export interface TrainingConfig {
   K: number;
   tol: number;
   T?: number;
+  epochs: number;
 }
 
 export interface MetricPayload {

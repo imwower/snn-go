@@ -6,7 +6,8 @@ import type {
   TrainIterEvent,
   UISysLogEvent,
   LogPayload,
-  DatasetDownloadEvent
+  DatasetDownloadEvent,
+  TrainingStatus
 } from './types';
 
 let source: EventSource | null = null;
@@ -61,7 +62,7 @@ const handleSysLog = (payload: UISysLogEvent) => {
 const handleTrainInit = (payload: TrainInitEvent) => {
   console.log('[UI] train_init', payload);
   const text = `[INIT] dataset=${payload.dataset ?? '-'} epochs=${payload.epochs ?? '-'} batch=${payload.batch_size ?? '-'} T=${payload.timesteps ?? '-'} K=${payload.fixed_point_K ?? '-'} lr=${payload.lr ?? '-'}`;
-  storeInstance?.setStatus('Idle');
+  storeInstance?.setStatus('Initializing');
   if (storeInstance) {
     const current = storeInstance.cfg;
     storeInstance.setCfg({
@@ -125,6 +126,13 @@ const setupListeners = (evSource: EventSource) => {
     const payload = parseJSON<TrainIterEvent>(event.data);
     if (payload) {
       handleTrainIter(payload);
+    }
+  });
+  evSource.addEventListener('train_status', (event: MessageEvent<string>) => {
+    const payload = parseJSON<{ status?: string }>(event.data);
+    if (payload?.status && storeInstance) {
+      const nextStatus = payload.status as TrainingStatus;
+      storeInstance.setStatus(nextStatus);
     }
   });
   evSource.addEventListener('dataset_download', (event: MessageEvent<string>) => {

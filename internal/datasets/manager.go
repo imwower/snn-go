@@ -85,6 +85,24 @@ func (m *Manager) datasetRoot(def Definition) string {
 	return candidate
 }
 
+func (m *Manager) DatasetPath(name string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	def, ok := m.defs[strings.ToUpper(name)]
+	if !ok {
+		return "", ErrUnknownDataset
+	}
+	return m.datasetRoot(def), nil
+}
+
+func (m *Manager) DatasetInstalled(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	status := m.getStatusLocked(name)
+	status.Installed = m.isInstalledLocked(name)
+	return status.Installed
+}
+
 func (m *Manager) List() []Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()

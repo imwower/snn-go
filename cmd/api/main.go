@@ -8,12 +8,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/imwower/snn-go/internal/config"
 	"github.com/imwower/snn-go/internal/datasets"
 	"github.com/imwower/snn-go/internal/events"
+	"github.com/imwower/snn-go/internal/trainer"
 	"github.com/nats-io/nats.go"
 )
 
@@ -98,6 +100,164 @@ func sseHandler(h *sseHub) http.HandlerFunc {
 	}
 }
 
+type trainInitRequest struct {
+	Dataset     string  `json:"dataset"`
+	Mode        string  `json:"mode"`
+	NetworkSize int     `json:"network_size"`
+	Layers      int     `json:"layers"`
+	LR          float64 `json:"lr"`
+	K           int     `json:"K"`
+	Tol         float64 `json:"tol"`
+	T           int     `json:"T"`
+	Epochs      int     `json:"epochs"`
+}
+
+type trainerService struct {
+	cfg    config.Config
+	ds     *datasets.Manager
+	runner *trainer.Runner
+
+	mu      sync.Mutex
+	pending *trainer.Options
+}
+
+var errDatasetNotInstalled = errors.New("dataset not installed")
+
+func newTrainerService(cfg config.Config, ds *datasets.Manager, runner *trainer.Runner) *trainerService {
+	return &trainerService{
+		cfg:    cfg,
+		ds:     ds,
+		runner: runner,
+	}
+}
+
+func (s *trainerService) prepareOptions(req trainInitRequest) (trainer.Options, error) {
+	opts := trainer.Options{
+		Dataset:       req.Dataset,
+		Epochs:        req.Epochs,
+		BatchSize:     s.cfg.Training.BatchSize,
+		Timesteps:     chooseInt(req.T, s.cfg.Training.Timesteps),
+		FixedPointK:   chooseInt(req.K, s.cfg.Training.FixedPointK),
+		FixedPointTol: chooseFloat(req.Tol, s.cfg.Training.FixedPointTol),
+		LearningRate:  chooseFloat(req.LR, s.cfg.Training.LR),
+		Hidden:        chooseInt(req.NetworkSize, s.cfg.Training.Hidden),
+		Mode:          chooseString(req.Mode, "tstep"),
+		Layers:        chooseInt(req.Layers, 1),
+		NetworkSize:   chooseInt(req.NetworkSize, s.cfg.Training.Hidden),
+		Seed:          s.cfg.Training.Seed,
+		EndToEnd:      s.cfg.Training.EndToEnd,
+		InputSize:     s.cfg.Model.Input,
+		OutputSize:    s.cfg.Model.Output,
+		KappaBS:       s.cfg.Training.KappaBS,
+		KappaAS:       s.cfg.Training.KappaAS,
+		Theta:         s.cfg.Training.Theta,
+		AlphaB:        s.cfg.Training.AlphaB,
+		AlphaA:        s.cfg.Training.AlphaA,
+		AlphaS:        s.cfg.Training.AlphaS,
+	}
+
+	if opts.Dataset == "" {
+		opts.Dataset = s.cfg.Training.Dataset
+	}
+	path, err := s.ds.DatasetPath(opts.Dataset)
+	if err != nil {
+		return opts, err
+	}
+	if !s.ds.DatasetInstalled(opts.Dataset) {
+		return opts, fmt.Errorf("%w: %s", errDatasetNotInstalled, opts.Dataset)
+	}
+	opts.DataRoot = path
+
+	if opts.Epochs <= 0 {
+		opts.Epochs = s.cfg.Training.Epochs
+	}
+	if opts.Validate() {
+		return opts, nil
+	}
+	return opts, fmt.Errorf("参数不合法")
+}
+
+func chooseInt(value int, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func chooseFloat(value float64, fallback float64) float64 {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func chooseString(value string, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
+}
+
+func (s *trainerService) Init(req trainInitRequest) (trainer.Options, error) {
+	opts, err := s.prepareOptions(req)
+	if err != nil {
+		return opts, err
+	}
+	s.mu.Lock()
+	if s.runner.Status() == "Training" {
+		s.mu.Unlock()
+		return opts, trainer.ErrRunInProgress
+	}
+	copyOpts := opts
+	s.pending = &copyOpts
+	s.mu.Unlock()
+	return opts, nil
+}
+
+func (s *trainerService) Start() error {
+	s.mu.Lock()
+	var opts trainer.Options
+	if s.pending != nil {
+		opts = *s.pending
+	} else {
+		defaultReq := trainInitRequest{
+			Dataset:     s.cfg.Training.Dataset,
+			NetworkSize: s.cfg.Training.Hidden,
+			LR:          s.cfg.Training.LR,
+			K:           s.cfg.Training.FixedPointK,
+			Tol:         s.cfg.Training.FixedPointTol,
+			T:           s.cfg.Training.Timesteps,
+			Epochs:      s.cfg.Training.Epochs,
+		}
+		var err error
+		opts, err = s.prepareOptions(defaultReq)
+		if err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	s.mu.Unlock()
+	if err := s.runner.Start(opts); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.pending = nil
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *trainerService) Stop() error {
+	err := s.runner.Stop()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+func (s *trainerService) Status() string {
+	return s.runner.Status()
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetPrefix("[API] ")
@@ -169,16 +329,22 @@ func main() {
 	http.HandleFunc("/api/datasets/download", downloadHandler)
 	http.HandleFunc("/api/datasets/download/", downloadHandler)
 
-	type trainInitRequest struct {
-		Dataset     string  `json:"dataset"`
-		Mode        string  `json:"mode"`
-		NetworkSize int     `json:"network_size"`
-		Layers      int     `json:"layers"`
-		LR          float64 `json:"lr"`
-		K           int     `json:"K"`
-		Tol         float64 `json:"tol"`
-		T           int     `json:"T"`
+	broadcastStatus := func(status string) {
+		payload, _ := json.Marshal(struct {
+			Status string `json:"status"`
+		}{Status: status})
+		hub.broadcast("train_status", payload)
 	}
+
+	trainerRunner := trainer.NewRunner(cfg,
+		func(level, msg string) {
+			log.Printf("[TRAIN] %s: %s", level, msg)
+		},
+		func(status string) {
+			broadcastStatus(status)
+		},
+	)
+	trainSvc := newTrainerService(cfg, dsManager, trainerRunner)
 
 	http.HandleFunc("/api/train/init", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -193,29 +359,43 @@ func main() {
 				http.Error(w, "invalid request body", http.StatusBadRequest)
 				return
 			}
-			if req.Dataset == "" {
-				http.Error(w, "dataset required", http.StatusBadRequest)
+			opts, err := trainSvc.Init(req)
+			if err != nil {
+				switch {
+				case errors.Is(err, datasets.ErrUnknownDataset):
+					http.Error(w, err.Error(), http.StatusNotFound)
+				case errors.Is(err, errDatasetNotInstalled):
+					http.Error(w, err.Error(), http.StatusConflict)
+				case errors.Is(err, trainer.ErrRunInProgress):
+					http.Error(w, err.Error(), http.StatusConflict)
+				default:
+					http.Error(w, err.Error(), http.StatusBadRequest)
+				}
 				return
 			}
-			msg := fmt.Sprintf("初始化训练：dataset=%s mode=%s lr=%.4f layers=%d size=%d T=%d K=%d tol=%.6f",
-				req.Dataset, req.Mode, req.LR, req.Layers, req.NetworkSize, req.T, req.K, req.Tol)
+			msg := fmt.Sprintf("初始化训练：dataset=%s mode=%s lr=%.4f layers=%d size=%d T=%d K=%d tol=%.6f epochs=%d",
+				opts.Dataset, opts.Mode, opts.LearningRate, opts.Layers, opts.NetworkSize, opts.Timesteps, opts.FixedPointK, opts.FixedPointTol, opts.Epochs)
 			broadcastLog("INFO", msg)
+			broadcastStatus("Initializing")
 
 			initPayload := events.TrainInit{
-				Dataset:   req.Dataset,
-				Epochs:    cfg.Training.Epochs,
-				BatchSize: cfg.Training.BatchSize,
-				T:         req.T,
-				K:         req.K,
-				Tol:       req.Tol,
-				Hidden:    cfg.Training.Hidden,
-				LR:        req.LR,
+				Dataset:   opts.Dataset,
+				Epochs:    opts.Epochs,
+				BatchSize: opts.BatchSize,
+				T:         opts.Timesteps,
+				K:         opts.FixedPointK,
+				Tol:       opts.FixedPointTol,
+				Hidden:    opts.Hidden,
+				LR:        opts.LearningRate,
 				Time:      events.Now(),
 			}
 			payload, _ := json.Marshal(initPayload)
 			hub.broadcast("train_init", payload)
 
-			replyJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+			replyJSON(w, http.StatusAccepted, map[string]any{
+				"status":  "initialized",
+				"options": initPayload,
+			})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -229,8 +409,16 @@ func main() {
 			return
 		case http.MethodPost:
 			setCORS(w, "POST, OPTIONS")
+			if err := trainSvc.Start(); err != nil {
+				if errors.Is(err, trainer.ErrRunInProgress) {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			broadcastLog("INFO", "启动训练流程")
-			replyJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+			replyJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -244,8 +432,16 @@ func main() {
 			return
 		case http.MethodPost:
 			setCORS(w, "POST, OPTIONS")
+			if err := trainSvc.Stop(); err != nil {
+				if errors.Is(err, trainer.ErrNoRunInProgress) {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			broadcastLog("WARNING", "收到停止训练指令")
-			replyJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+			replyJSON(w, http.StatusAccepted, map[string]string{"status": "stopping"})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

@@ -28,7 +28,8 @@ const defaultConfig = (): TrainingConfig => ({
   lr: 1e-3,
   K: 10,
   tol: 1e-4,
-  T: 20
+  T: 20,
+  epochs: 3
 });
 
 const buildLayout = (cfg: TrainingConfig): LayerLayout[] => {
@@ -113,6 +114,11 @@ export const useUiStore = defineStore('ui', {
         next.T = Math.max(1, Math.round(next.T));
       } else {
         next.T = current.T;
+      }
+      if (typeof next.epochs === 'number' && Number.isFinite(next.epochs)) {
+        next.epochs = Math.max(1, Math.round(next.epochs));
+      } else {
+        next.epochs = current.epochs;
       }
       this.cfg = next;
       this.layersLayout = buildLayout(next);
