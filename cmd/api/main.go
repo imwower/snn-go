@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/imwower/snn-go/internal/config"
 	"github.com/imwower/snn-go/internal/datasets"
+	"github.com/imwower/snn-go/internal/events"
 	"github.com/nats-io/nats.go"
 )
 
@@ -112,6 +114,25 @@ func main() {
 	})
 
 	hub := newHub()
+	setCORS := func(w http.ResponseWriter, methods string) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", methods)
+	}
+	replyJSON := func(w http.ResponseWriter, status int, payload any) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(payload)
+	}
+	broadcastLog := func(level, msg string) {
+		payload, _ := json.Marshal(events.UISysLog{
+			Level: level,
+			Msg:   msg,
+			Time:  events.Now(),
+		})
+		hub.broadcast("log", payload)
+	}
+
 	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -147,6 +168,88 @@ func main() {
 	}
 	http.HandleFunc("/api/datasets/download", downloadHandler)
 	http.HandleFunc("/api/datasets/download/", downloadHandler)
+
+	type trainInitRequest struct {
+		Dataset     string  `json:"dataset"`
+		Mode        string  `json:"mode"`
+		NetworkSize int     `json:"network_size"`
+		Layers      int     `json:"layers"`
+		LR          float64 `json:"lr"`
+		K           int     `json:"K"`
+		Tol         float64 `json:"tol"`
+		T           int     `json:"T"`
+	}
+
+	http.HandleFunc("/api/train/init", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodOptions:
+			setCORS(w, "POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case http.MethodPost:
+			setCORS(w, "POST, OPTIONS")
+			var req trainInitRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+			if req.Dataset == "" {
+				http.Error(w, "dataset required", http.StatusBadRequest)
+				return
+			}
+			msg := fmt.Sprintf("初始化训练：dataset=%s mode=%s lr=%.4f layers=%d size=%d T=%d K=%d tol=%.6f",
+				req.Dataset, req.Mode, req.LR, req.Layers, req.NetworkSize, req.T, req.K, req.Tol)
+			broadcastLog("INFO", msg)
+
+			initPayload := events.TrainInit{
+				Dataset:   req.Dataset,
+				Epochs:    cfg.Training.Epochs,
+				BatchSize: cfg.Training.BatchSize,
+				T:         req.T,
+				K:         req.K,
+				Tol:       req.Tol,
+				Hidden:    cfg.Training.Hidden,
+				LR:        req.LR,
+				Time:      events.Now(),
+			}
+			payload, _ := json.Marshal(initPayload)
+			hub.broadcast("train_init", payload)
+
+			replyJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	http.HandleFunc("/api/train/start", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodOptions:
+			setCORS(w, "POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case http.MethodPost:
+			setCORS(w, "POST, OPTIONS")
+			broadcastLog("INFO", "启动训练流程")
+			replyJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	http.HandleFunc("/api/train/stop", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodOptions:
+			setCORS(w, "POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case http.MethodPost:
+			setCORS(w, "POST, OPTIONS")
+			broadcastLog("WARNING", "收到停止训练指令")
+			replyJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
 	nc, err := nats.Connect(cfg.NATS.URL)
 	if err != nil {
