@@ -78,3 +78,8 @@ training finished
 ## 许可
 
 MIT
+
+## 开发脚本
+
+- 清空 JetStream 流：`./scripts/purge-nats.sh [容器名] [流名]`  
+  默认目标为容器 `nats-js` 和流 `SNN_EVENTS`。脚本会在容器内安装 `nats` CLI（若缺失），然后执行 `nats stream purge <流名> --force`。
