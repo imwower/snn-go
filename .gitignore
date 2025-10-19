@@ -4,3 +4,5 @@
 /.data/nats/
 /.data/nui/
 /.cache/
+/api
+/.gocache/

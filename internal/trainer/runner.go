@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -233,6 +234,12 @@ loopEpochs:
 		default:
 		}
 
+		if loader != nil {
+			resetSeed := opts.Seed + int64(epoch)
+			loader.Reset(resetSeed)
+			logInfo(fmt.Sprintf("[DATA] 重置加载器：epoch=%d seed=%d", epoch, resetSeed))
+		}
+
 		epochStart := time.Now()
 		var sumLoss, sumAcc, sumTPS float64
 		var steps int
@@ -258,6 +265,26 @@ loopEpochs:
 			stepStart := time.Now()
 			logits, cache := net.Forward(batch.X, opts.Timesteps)
 			residual := residualFromVs(cache)
+
+			if subj := r.cfg.NATS.Subjects.Spikes; subj != "" {
+				if bursts := BuildSpikeBursts(cache, opts.Hidden, opts.Layers, 0, 0); len(bursts) > 0 {
+					now := events.Now()
+					summaries := make([]string, 0, len(bursts))
+					for _, burst := range bursts {
+						burst.Time = now
+						_ = bus.PublishJSON(
+							subj,
+							natsbus.MsgID("spike-", epoch, "-", steps, "-", burst.Layer, "-", time.Now().UnixNano()),
+							burst,
+						)
+						summaries = append(summaries, fmt.Sprintf("L%d neurons=%d power=%.3f", burst.Layer, len(burst.Neurons), burst.Power))
+					}
+					if len(summaries) > 3 {
+						summaries = summaries[:3]
+					}
+					logInfo(fmt.Sprintf("[SPIKE] epoch=%d step=%d %s", epoch, steps, strings.Join(summaries, " ")))
+				}
+			}
 
 			_ = bus.PublishJSON(r.cfg.NATS.Subjects.TrainIter,
 				natsbus.MsgID("fpt-", epoch, "-", steps, "-", time.Now().UnixNano()),

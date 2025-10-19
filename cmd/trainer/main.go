@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/imwower/snn-go/internal/config"
@@ -12,6 +13,7 @@ import (
 	"github.com/imwower/snn-go/internal/events"
 	"github.com/imwower/snn-go/internal/natsbus"
 	"github.com/imwower/snn-go/internal/snn"
+	trainutil "github.com/imwower/snn-go/internal/trainer"
 )
 
 func main() {
@@ -40,7 +42,7 @@ func main() {
 		events.TrainInit{
 			Dataset: cfg.Training.Dataset, Epochs: cfg.Training.Epochs, BatchSize: cfg.Training.BatchSize,
 			T: cfg.Training.Timesteps, K: cfg.Training.FixedPointK, Tol: cfg.Training.FixedPointTol,
-			Hidden: cfg.Training.Hidden, LR: cfg.Training.LR, Time: events.Now(),
+			Hidden: cfg.Training.Hidden, Layers: 1, LR: cfg.Training.LR, Time: events.Now(),
 		},
 	)
 
@@ -78,6 +80,26 @@ func main() {
 			logits, cache := net.Forward(batch.X, cfg.Training.Timesteps)
 
 			residual := residualFromVs(cache)
+
+			if subj := cfg.NATS.Subjects.Spikes; subj != "" {
+				if bursts := trainutil.BuildSpikeBursts(cache, cfg.Training.Hidden, 1, 0, 0); len(bursts) > 0 {
+					now := events.Now()
+					summaries := make([]string, 0, len(bursts))
+					for _, burst := range bursts {
+						burst.Time = now
+						_ = bus.PublishJSON(
+							subj,
+							natsbus.MsgID("spike-", epoch, "-", steps, "-", burst.Layer, "-", time.Now().UnixNano()),
+							burst,
+						)
+						summaries = append(summaries, fmt.Sprintf("L%d neurons=%d power=%.3f", burst.Layer, len(burst.Neurons), burst.Power))
+					}
+					if len(summaries) > 3 {
+						summaries = summaries[:3]
+					}
+					log.Printf("[TRAIN] spike epoch=%d step=%d %s", epoch, steps, strings.Join(summaries, " "))
+				}
+			}
 			loss, acc := net.BackpropReadout(cache, batch.X, logits, batch.Y, cfg.Training.LR)
 			top5 := topKAcc(logits, batch.Y, 5)
 

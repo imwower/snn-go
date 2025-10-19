@@ -22,6 +22,7 @@ const MAX_MESSAGES = 100;
 const MAX_LOGS = 500;
 const DEFAULT_TOAST_DURATION = 3000;
 const PULSE_COOLDOWN_MS = 60;
+const SPIKE_STREAM_TIMEOUT_MS = 1500;
 
 const defaultConfig = (): TrainingConfig => ({
   dataset: 'MNIST',
@@ -126,7 +127,9 @@ export const useUiStore = defineStore('ui', {
         startedAt: 0
       },
       pulseLayerCursor: 0,
-      lastPulseAt: null as number | null
+      lastPulseAt: null as number | null,
+      spikeStreamActive: false,
+      lastSpikeEventAt: null as number | null
     };
   },
   getters: {
@@ -331,16 +334,41 @@ export const useUiStore = defineStore('ui', {
       this.lastMetric = entry;
       this.updateBatchSnapshot(payload);
     },
-    pushSpike(payload: SpikePayload) {
-      const entry: SpikeEntry = { ...payload, at: Date.now() };
+    pushSpike(payload: SpikePayload, isReal = true) {
+      const now = Date.now();
+      const entry: SpikeEntry = { ...payload, at: now };
       this.spikes.push(entry);
+      console.debug('[UI] pushSpike', {
+        layer: entry.layer,
+        neurons: entry.neurons,
+        edges: entry.edges,
+        totalSpikes: this.spikes.length
+      });
       if (this.spikes.length > MAX_SPIKES) {
         this.spikes.splice(0, this.spikes.length - MAX_SPIKES);
       }
-      this.lastPulseAt = Date.now();
+      this.lastPulseAt = now;
+      if (isReal) {
+        this.spikeStreamActive = true;
+        this.lastSpikeEventAt = now;
+      }
     },
     triggerPulseFromIter(payload: TrainIterEvent) {
+      const now = Date.now();
+      if (this.spikeStreamActive) {
+        const lastEvent = typeof this.lastSpikeEventAt === 'number' ? this.lastSpikeEventAt : 0;
+        const idle = now - lastEvent;
+        if (idle > SPIKE_STREAM_TIMEOUT_MS) {
+          console.debug('[UI] spike stream idle, reverting to synthetic pulses', { idleMs: idle });
+          this.spikeStreamActive = false;
+        } else {
+          return;
+        }
+      }
       if (!this.layersLayout.length) {
+        return;
+      }
+      if (typeof this.lastPulseAt === 'number' && now - this.lastPulseAt < PULSE_COOLDOWN_MS) {
         return;
       }
       const layouts = this.layersLayout;
@@ -373,15 +401,30 @@ export const useUiStore = defineStore('ui', {
 
       this.pushSpike({
         layer: layerIndex,
-        t: typeof payload.time_unix === 'number' ? payload.time_unix : Math.floor(Date.now() / 1000),
+        t: typeof payload.time_unix === 'number' ? payload.time_unix : Math.floor(now / 1000),
         neurons
-      });
+      }, false);
     },
     maybeTriggerPulseFromMetric(payload: MetricPayload) {
       const now = Date.now();
+      if (this.spikeStreamActive) {
+        const lastEvent = typeof this.lastSpikeEventAt === 'number' ? this.lastSpikeEventAt : 0;
+        const idle = now - lastEvent;
+        if (idle > SPIKE_STREAM_TIMEOUT_MS) {
+          console.debug('[UI] spike stream idle during metrics, re-enabling fallback', { idleMs: idle });
+          this.spikeStreamActive = false;
+        } else {
+          return;
+        }
+      }
       if (typeof this.lastPulseAt === 'number' && now - this.lastPulseAt < PULSE_COOLDOWN_MS) {
         return;
       }
+      console.debug('[UI] fallback pulse from metrics', {
+        epoch: payload.epoch,
+        step: payload.step,
+        residual: payload.residual
+      });
       this.triggerPulseFromIter({
         epoch: payload.epoch,
         step: payload.step,
@@ -462,6 +505,8 @@ export const useUiStore = defineStore('ui', {
     clearSpikes() {
       this.spikes = [];
       this.lastPulseAt = null;
+      this.spikeStreamActive = false;
+      this.lastSpikeEventAt = null;
     },
     showToast(message: string, type: 'info' | 'error' = 'info', duration = DEFAULT_TOAST_DURATION) {
       this.toast = {

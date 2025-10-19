@@ -15,6 +15,7 @@ import (
 	"github.com/imwower/snn-go/internal/config"
 	"github.com/imwower/snn-go/internal/datasets"
 	"github.com/imwower/snn-go/internal/events"
+	"github.com/imwower/snn-go/internal/natsbus"
 	"github.com/imwower/snn-go/internal/trainer"
 	"github.com/nats-io/nats.go"
 )
@@ -387,6 +388,7 @@ func main() {
 				K:         opts.FixedPointK,
 				Tol:       opts.FixedPointTol,
 				Hidden:    opts.Hidden,
+				Layers:    opts.Layers,
 				LR:        opts.LearningRate,
 				Time:      events.Now(),
 			}
@@ -456,6 +458,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("JetStream 初始化失败：%v", err)
 	}
+	if err := natsbus.EnsureStream(js, natsbus.StreamConfig{
+		Stream:        cfg.NATS.Stream,
+		URL:           cfg.NATS.URL,
+		DupeWindowSec: cfg.NATS.DupeWindowSec,
+	}); err != nil {
+		log.Fatalf("JetStream 确认流失败：%v", err)
+	}
 
 	type subSpec struct {
 		Subject string
@@ -468,6 +477,9 @@ func main() {
 		{cfg.NATS.Subjects.UILog, "SSE_LOG", "log"},
 		{cfg.NATS.Subjects.TrainInit, "SSE_INIT", "train_init"},
 		{cfg.NATS.Subjects.TrainIter, "SSE_ITER", "train_iter"},
+	}
+	if subj := cfg.NATS.Subjects.Spikes; subj != "" {
+		specs = append(specs, subSpec{Subject: subj, Durable: "SSE_SPIKE", Event: "spike"})
 	}
 
 	for _, sp := range specs {
@@ -490,6 +502,9 @@ func main() {
 					continue
 				}
 				for _, m := range msgs {
+					if ev == "train_iter" || ev == "spike" {
+						log.Printf("[SSE] relay %s payload=%s", ev, strings.TrimSpace(string(m.Data)))
+					}
 					hub.broadcast(ev, m.Data)
 					_ = m.Ack()
 				}

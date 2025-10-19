@@ -30,6 +30,14 @@ func Connect(cfg StreamConfig) (*Bus, error) {
 		nc.Close()
 		return nil, err
 	}
+	if err := ensureStream(js, cfg); err != nil {
+		nc.Close()
+		return nil, err
+	}
+	return &Bus{nc: nc, js: js}, nil
+}
+
+func ensureStream(js nats.JetStreamContext, cfg StreamConfig) error {
 	streamCfg := &nats.StreamConfig{
 		Name:       cfg.Stream,
 		Subjects:   []string{"snn.>"},
@@ -41,8 +49,7 @@ func Connect(cfg StreamConfig) (*Bus, error) {
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			info, infoErr := js.StreamInfo(cfg.Stream)
 			if infoErr != nil {
-				nc.Close()
-				return nil, fmt.Errorf("natsbus: describe stream %s: %w", cfg.Stream, infoErr)
+				return fmt.Errorf("natsbus: describe stream %s: %w", cfg.Stream, infoErr)
 			}
 			dupWindow := time.Duration(cfg.DupeWindowSec) * time.Second
 			subjectMatch := len(info.Config.Subjects) == 1 && info.Config.Subjects[0] == "snn.>"
@@ -56,16 +63,14 @@ func Connect(cfg StreamConfig) (*Bus, error) {
 				updateCfg.Retention = nats.LimitsPolicy
 				updateCfg.Duplicates = dupWindow
 				if _, err := js.UpdateStream(&updateCfg); err != nil {
-					nc.Close()
-					return nil, fmt.Errorf("natsbus: update stream %s: %w", cfg.Stream, err)
+					return fmt.Errorf("natsbus: update stream %s: %w", cfg.Stream, err)
 				}
 			}
 		} else {
-			nc.Close()
-			return nil, fmt.Errorf("natsbus: add stream %s: %w", cfg.Stream, err)
+			return fmt.Errorf("natsbus: add stream %s: %w", cfg.Stream, err)
 		}
 	}
-	return &Bus{nc: nc, js: js}, nil
+	return nil
 }
 
 func (b *Bus) PublishJSON(subject, msgID string, v any) error {
@@ -88,4 +93,8 @@ func (b *Bus) Close() {
 
 func MsgID(parts ...any) string {
 	return fmt.Sprint(parts...)
+}
+
+func EnsureStream(js nats.JetStreamContext, cfg StreamConfig) error {
+	return ensureStream(js, cfg)
 }

@@ -200,7 +200,7 @@ const buildNodes = (layouts: LayerLayout[]) => {
   glow = new Float32Array(totalInstances);
   nodeGeometry = new THREE.SphereGeometry(0.25, 20, 20);
   nodeMaterial = new THREE.MeshPhongMaterial({
-    color: baseNodeColor,
+    color: 0xffffff,
     emissive: 0x0e223a,
     emissiveIntensity: 0.4,
     shininess: 50,
@@ -276,7 +276,7 @@ const rebuildScene = (layouts: LayerLayout[]) => {
 const highlightNeurons = (globalIndices: number[]) => {
   globalIndices.forEach((index) => {
     if (index >= 0 && index < glow.length) {
-      glow[index] = Math.max(glow[index], 1.5);
+      glow[index] = Math.max(glow[index], 2.2);
     }
   });
 };
@@ -288,7 +288,7 @@ const highlightEdges = (edgePairs: Array<[number, number]> | undefined, neurons:
       const key = `${src}:${dst}`;
       const edgeIdx = edgeIndexMap.get(key);
       if (edgeIdx !== undefined) {
-        edgeIntensity[edgeIdx] = Math.max(edgeIntensity[edgeIdx] ?? 0, 1.4);
+        edgeIntensity[edgeIdx] = Math.max(edgeIntensity[edgeIdx] ?? 0, 1.8);
         touched.add(edgeIdx);
       }
     });
@@ -299,7 +299,7 @@ const highlightEdges = (edgePairs: Array<[number, number]> | undefined, neurons:
         return;
       }
       edgesForNeuron.forEach((edgeIdx) => {
-        edgeIntensity[edgeIdx] = Math.max(edgeIntensity[edgeIdx] ?? 0, 1.4);
+        edgeIntensity[edgeIdx] = Math.max(edgeIntensity[edgeIdx] ?? 0, 1.8);
         touched.add(edgeIdx);
       });
     });
@@ -343,6 +343,11 @@ const processSpike = (spike: SpikeEntry) => {
       return [srcGlobal, dstGlobal] as [number, number];
     }) ?? undefined;
 
+  console.debug('[Network3D] processSpike', {
+    layer: spike.layer,
+    neurons,
+    highlightEdgesCount: edges?.length ?? 0
+  });
   highlightNeurons(neurons);
   highlightEdges(edges, neurons);
 };

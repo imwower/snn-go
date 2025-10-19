@@ -63,6 +63,7 @@ export interface SpikePayload {
   t: number;
   neurons: number[];
   edges?: [number, number][];
+  power?: number;
 }
 
 export interface SpikeEntry extends SpikePayload {
@@ -102,6 +103,7 @@ export interface TrainInitEvent {
   fixed_point_K?: number;
   fixed_point_tol?: number;
   hidden?: number;
+  layers?: number;
   lr?: number;
   time_unix?: number;
 }

@@ -7,6 +7,7 @@
       "metrics_epoch": "snn.metrics.epoch",
       "train_init": "snn.train.init",
       "train_iter": "snn.train.fpt.iter",
+      "spikes": "snn.train.spikes",
       "params_apply": "snn.params.apply",
       "params_snap": "snn.params.snap",
       "ui_log": "snn.ui.log.training"

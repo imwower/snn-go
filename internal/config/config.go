@@ -11,6 +11,7 @@ type Subjects struct {
 	MetricsEpoch string `json:"metrics_epoch"`
 	TrainInit    string `json:"train_init"`
 	TrainIter    string `json:"train_iter"`
+	Spikes       string `json:"spikes"`
 	ParamsApply  string `json:"params_apply"`
 	ParamsSnap   string `json:"params_snap"`
 	UILog        string `json:"ui_log"`

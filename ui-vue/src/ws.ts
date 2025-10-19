@@ -7,7 +7,8 @@ import type {
   UISysLogEvent,
   LogPayload,
   DatasetDownloadEvent,
-  TrainingStatus
+  TrainingStatus,
+  SpikePayload
 } from './types';
 
 let source: EventSource | null = null;
@@ -105,7 +106,7 @@ const handleSysLog = (payload: UISysLogEvent) => {
 
 const handleTrainInit = (payload: TrainInitEvent) => {
   console.log('[UI] train_init', payload);
-  const text = `[INIT] dataset=${payload.dataset ?? '-'} epochs=${payload.epochs ?? '-'} batch=${payload.batch_size ?? '-'} T=${payload.timesteps ?? '-'} K=${payload.fixed_point_K ?? '-'} lr=${payload.lr ?? '-'}`;
+  const text = `[INIT] dataset=${payload.dataset ?? '-'} epochs=${payload.epochs ?? '-'} batch=${payload.batch_size ?? '-'} layers=${payload.layers ?? '-'} T=${payload.timesteps ?? '-'} K=${payload.fixed_point_K ?? '-'} lr=${payload.lr ?? '-'}`;
   storeInstance?.setStatus('Idle');
   if (storeInstance) {
     const current = storeInstance.cfg;
@@ -115,6 +116,7 @@ const handleTrainInit = (payload: TrainInitEvent) => {
       K: typeof payload.fixed_point_K === 'number' ? payload.fixed_point_K : current.K,
       T: typeof payload.timesteps === 'number' ? payload.timesteps : current.T,
       network_size: typeof payload.hidden === 'number' ? payload.hidden : current.network_size,
+      layers: typeof payload.layers === 'number' ? payload.layers : current.layers,
       tol: typeof payload.fixed_point_tol === 'number' ? payload.fixed_point_tol : current.tol,
       epochs: typeof payload.epochs === 'number' ? payload.epochs : current.epochs
     });
@@ -128,18 +130,26 @@ const handleTrainIter = (payload: TrainIterEvent) => {
   if (typeof payload.residual === 'number') {
     console.log('[UI] train_iter residual', payload.residual);
   }
+  console.debug('[SSE] train_iter payload', payload);
   const residualText =
     typeof payload.residual === 'number' ? payload.residual.toFixed(6) : String(payload.residual ?? 'n/a');
   pushTextLog(
     `[FPT] epoch=${payload.epoch ?? '-'} step=${payload.step ?? '-'} residual=${residualText}`,
     payload.time_unix
   );
-  storeInstance?.triggerPulseFromIter(payload);
+  if (storeInstance) {
+    storeInstance.triggerPulseFromIter(payload);
+  }
   storeInstance?.pushMessage('train_iter', payload, 'train_iter');
 };
 
 const handleDatasetDownload = (payload: DatasetDownloadEvent) => {
   storeInstance?.applyDatasetEvent(payload);
+};
+
+const handleSpike = (payload: SpikePayload) => {
+  storeInstance?.pushSpike(payload);
+  storeInstance?.pushMessage('spike', payload, 'spike');
 };
 
 const setupListeners = (evSource: EventSource) => {
@@ -175,6 +185,12 @@ const setupListeners = (evSource: EventSource) => {
     const payload = parseJSON<TrainIterEvent>(event.data);
     if (payload) {
       handleTrainIter(payload);
+    }
+  });
+  evSource.addEventListener('spike', (event: MessageEvent<string>) => {
+    const payload = parseJSON<SpikePayload>(event.data);
+    if (payload) {
+      handleSpike(payload);
     }
   });
   evSource.addEventListener('train_status', (event: MessageEvent<string>) => {

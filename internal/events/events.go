@@ -12,6 +12,7 @@ type TrainInit struct {
 	K         int     `json:"fixed_point_K"`
 	Tol       float64 `json:"fixed_point_tol"`
 	Hidden    int     `json:"hidden"`
+	Layers    int     `json:"layers,omitempty"`
 	LR        float64 `json:"lr"`
 	Time      int64   `json:"time_unix"`
 }
@@ -62,4 +63,12 @@ type UISysLog struct {
 	Level string `json:"level"`
 	Msg   string `json:"msg"`
 	Time  int64  `json:"time_unix"`
+}
+
+type SpikeBurst struct {
+	Layer   int      `json:"layer"`
+	Time    int64    `json:"time_unix"`
+	Neurons []int    `json:"neurons"`
+	Edges   [][2]int `json:"edges,omitempty"`
+	Power   float64  `json:"power,omitempty"`
 }
