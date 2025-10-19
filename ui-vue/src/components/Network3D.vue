@@ -37,9 +37,9 @@ let nodeToEdges = new Map<number, number[]>();
 let edgesList: Array<{ src: number; dst: number }> = [];
 
 const baseNodeColor = new THREE.Color('#2563eb');
-const highlightNodeColor = new THREE.Color('#0f9d74');
+const highlightNodeColor = new THREE.Color('#f97316');
 const baseEdgeColor = new THREE.Color('#37588f');
-const highlightEdgeColor = new THREE.Color('#2563eb');
+const highlightEdgeColor = new THREE.Color('#fb923c');
 const baseEdgeHSL = { h: 0, s: 0, l: 0 };
 const highlightEdgeHSL = { h: 0, s: 0, l: 0 };
 baseEdgeColor.getHSL(baseEdgeHSL);
@@ -344,8 +344,8 @@ const animate = () => {
     return;
   }
   const delta = clock.getDelta();
-  const glowDecay = delta * 2.5;
-  const edgeDecay = delta * 2.0;
+  const glowDecay = delta * 1.8;
+  const edgeDecay = delta * 1.6;
   let colorDirty = false;
 
   if (glow.length && nodeMesh && nodeColorAttr) {

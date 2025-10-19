@@ -97,19 +97,25 @@ const handleSysLog = (payload: UISysLogEvent) => {
   console.log('[UI] 日志', message);
   storeInstance?.pushPlainLog(message, level, payload.time_unix);
   storeInstance?.pushMessage('log', payload, 'log');
+  if (message.includes('训练完成')) {
+    storeInstance?.markTrainingDone();
+  }
 };
 
 const handleTrainInit = (payload: TrainInitEvent) => {
   console.log('[UI] train_init', payload);
   const text = `[INIT] dataset=${payload.dataset ?? '-'} epochs=${payload.epochs ?? '-'} batch=${payload.batch_size ?? '-'} T=${payload.timesteps ?? '-'} K=${payload.fixed_point_K ?? '-'} lr=${payload.lr ?? '-'}`;
-  storeInstance?.setStatus('Initializing');
+  storeInstance?.setStatus('Idle');
   if (storeInstance) {
     const current = storeInstance.cfg;
     storeInstance.setCfg({
       dataset: payload.dataset ?? current.dataset,
       lr: typeof payload.lr === 'number' ? payload.lr : current.lr,
       K: typeof payload.fixed_point_K === 'number' ? payload.fixed_point_K : current.K,
-      T: typeof payload.timesteps === 'number' ? payload.timesteps : current.T
+      T: typeof payload.timesteps === 'number' ? payload.timesteps : current.T,
+      network_size: typeof payload.hidden === 'number' ? payload.hidden : current.network_size,
+      tol: typeof payload.fixed_point_tol === 'number' ? payload.fixed_point_tol : current.tol,
+      epochs: typeof payload.epochs === 'number' ? payload.epochs : current.epochs
     });
     storeInstance.prepareRun(payload);
   }
@@ -127,6 +133,7 @@ const handleTrainIter = (payload: TrainIterEvent) => {
     `[FPT] epoch=${payload.epoch ?? '-'} step=${payload.step ?? '-'} residual=${residualText}`,
     payload.time_unix
   );
+  storeInstance?.triggerPulseFromIter(payload);
   storeInstance?.pushMessage('train_iter', payload, 'train_iter');
 };
 
@@ -213,7 +220,10 @@ const fetchConfig = async () => {
         dataset: training.dataset ?? current.dataset,
         lr: typeof training.lr === 'number' ? training.lr : current.lr,
         K: typeof training.fixed_point_K === 'number' ? training.fixed_point_K : current.K,
-        T: typeof training.timesteps === 'number' ? training.timesteps : current.T
+        T: typeof training.timesteps === 'number' ? training.timesteps : current.T,
+        network_size: typeof training.hidden === 'number' ? training.hidden : current.network_size,
+        tol: typeof training.fixed_point_tol === 'number' ? training.fixed_point_tol : current.tol,
+        epochs: typeof training.epochs === 'number' ? training.epochs : current.epochs
       });
     }
     store.pushMessage('config', cfg, 'config');

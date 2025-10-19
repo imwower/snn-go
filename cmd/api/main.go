@@ -339,6 +339,7 @@ func main() {
 	trainerRunner := trainer.NewRunner(cfg,
 		func(level, msg string) {
 			log.Printf("[TRAIN] %s: %s", level, msg)
+			broadcastLog(level, msg)
 		},
 		func(status string) {
 			broadcastStatus(status)

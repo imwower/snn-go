@@ -110,6 +110,7 @@ export interface TrainIterEvent {
   epoch?: number;
   step?: number;
   k?: number;
+  layer?: number;
   residual?: number;
   time_unix?: number;
 }

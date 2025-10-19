@@ -116,7 +116,7 @@ const downloadLocked = computed(() => store.isDownloadActive || isBusy.value);
 const controlsLocked = computed(() => isBusy.value || store.isControlLocked);
 const parametersLocked = computed(() => isBusy.value || isTraining.value);
 const initDisabled = computed(() => controlsLocked.value || isTraining.value);
-const trainButtonDisabled = computed(() => isBusy.value || store.status === 'Initializing');
+const trainButtonDisabled = computed(() => isBusy.value);
 const downloadPercentText = computed(() => `${store.downloadPercent}%`);
 const downloadButtonText = computed(() => {
   if (store.isDownloadActive) {
@@ -197,6 +197,7 @@ const initTraining = () =>
         T: store.cfg.T,
         epochs: store.cfg.epochs
       });
+      store.setStatus('Idle');
     } catch (err) {
       console.warn('Init failed', err);
       store.showToast('初始化训练失败', 'error');

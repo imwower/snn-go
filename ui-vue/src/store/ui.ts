@@ -12,7 +12,8 @@ import type {
   LogPayload,
   LogEntry,
   DatasetDownloadEvent,
-  TrainInitEvent
+  TrainInitEvent,
+  TrainIterEvent
 } from '../types';
 
 const MAX_METRICS = 500;
@@ -122,7 +123,8 @@ export const useUiStore = defineStore('ui', {
         name: '',
         progress: 0,
         startedAt: 0
-      }
+      },
+      pulseLayerCursor: 0
     };
   },
   getters: {
@@ -228,6 +230,8 @@ export const useUiStore = defineStore('ui', {
       this.lastEpochIndex = null;
       this.showDoneModal = false;
       this.finalSummary = null;
+      this.pulseLayerCursor = 0;
+      this.clearSpikes();
       if (typeof init?.epochs === 'number') {
         this.totalEpochs = init.epochs;
       }
@@ -299,6 +303,23 @@ export const useUiStore = defineStore('ui', {
       this.showDoneModal = false;
       this.finalSummary = null;
     },
+    markTrainingDone() {
+      if (!this.finalSummary) {
+        const epoch = this.lastEpochIndex ?? this.lastBatch.epoch ?? null;
+        const loss = typeof this.lastBatch.loss === 'number' ? this.lastBatch.loss : null;
+        const acc = typeof this.lastBatch.acc === 'number' ? this.lastBatch.acc : null;
+        this.finalSummary = {
+          epoch,
+          loss,
+          acc,
+          bestAcc: Number.isFinite(this.bestAcc) ? this.bestAcc : acc,
+          bestLoss: Number.isFinite(this.bestLoss) ? this.bestLoss : loss,
+          avgThroughput: this.avgThroughput,
+          epochSec: this.epochDuration
+        };
+      }
+      this.showDoneModal = true;
+    },
     pushMetric(payload: MetricPayload) {
       const entry: MetricEntry = { ...payload, at: Date.now() };
       this.metrics.push(entry);
@@ -314,6 +335,44 @@ export const useUiStore = defineStore('ui', {
       if (this.spikes.length > MAX_SPIKES) {
         this.spikes.splice(0, this.spikes.length - MAX_SPIKES);
       }
+    },
+    triggerPulseFromIter(payload: TrainIterEvent) {
+      if (!this.layersLayout.length) {
+        return;
+      }
+      const layouts = this.layersLayout;
+      let layerIndex = 0;
+      if (typeof payload.layer === 'number' && payload.layer >= 0 && payload.layer < layouts.length) {
+        layerIndex = Math.floor(payload.layer);
+      } else {
+        layerIndex = this.pulseLayerCursor % layouts.length;
+        this.pulseLayerCursor = (this.pulseLayerCursor + 1) % layouts.length;
+      }
+      const layout = layouts[layerIndex];
+      if (!layout || layout.count <= 0) {
+        return;
+      }
+      const baseCount = Math.max(1, Math.round(layout.count * 0.015));
+      const residualMagnitude = typeof payload.residual === 'number' ? Math.min(1, Math.abs(payload.residual) * 0.6) : 0;
+      const extra = Math.round(baseCount * residualMagnitude * 4);
+      const total = Math.min(layout.count, baseCount + extra);
+
+      const neurons: number[] = [];
+      const used = new Set<number>();
+      while (neurons.length < total) {
+        const idx = Math.floor(Math.random() * layout.count);
+        if (used.has(idx)) {
+          continue;
+        }
+        used.add(idx);
+        neurons.push(idx);
+      }
+
+      this.pushSpike({
+        layer: layerIndex,
+        t: typeof payload.time_unix === 'number' ? payload.time_unix : Math.floor(Date.now() / 1000),
+        neurons
+      });
     },
     pushMessage(subject: string, payload?: unknown, type?: string) {
       const entry: MessageEntry = {
@@ -340,6 +399,13 @@ export const useUiStore = defineStore('ui', {
     },
     pushPlainLog(message: string, level: LogPayload['level'] = 'INFO', ts?: number) {
       const unixSeconds = typeof ts === 'number' ? ts : Math.floor(Date.now() / 1000);
+      const last = this.logs[this.logs.length - 1];
+      if (last && last.message === message && last.level === level) {
+        const diff = typeof last.ts === 'number' ? Math.abs(last.ts - unixSeconds) : Number.POSITIVE_INFINITY;
+        if (diff <= 1) {
+          return;
+        }
+      }
       this.pushLog({
         ts: unixSeconds,
         level,
