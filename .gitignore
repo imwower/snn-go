@@ -3,3 +3,4 @@
 /ui-vue/dist/
 /.data/nats/
 /.data/nui/
+/.cache/
