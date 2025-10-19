@@ -36,19 +36,59 @@ const pushTextLog = (message: string, ts?: number, level: LogPayload['level'] = 
   storeInstance?.pushMessage('log-text', { message, ts, level }, 'log');
 };
 
+const formatFixed = (value: number | null | undefined, digits: number) =>
+  typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
+
 const handleMetricsBatch = (payload: MetricPayload) => {
-  storeInstance?.pushMetric(payload);
-  if (storeInstance && storeInstance.status === 'Idle') {
-    storeInstance.setStatus('Training');
+  const store = storeInstance;
+  store?.pushMetric(payload);
+  if (store && store.status === 'Idle') {
+    store.setStatus('Training');
   }
-  storeInstance?.pushMessage('metrics_batch', payload, 'metrics_batch');
+  const loss = formatFixed(payload.loss, 4);
+  const acc = formatFixed(payload.acc, 4);
+  const top5 = formatFixed(payload.top5, 4);
+  const throughput = formatFixed(payload.throughput, 1);
+  const stepMs = formatFixed(payload.step_ms, 0);
+  const emaLoss = formatFixed(payload.ema_loss, 4);
+  const emaAcc = formatFixed(payload.ema_acc, 4);
+  const lrValue = typeof payload.lr === 'number' && Number.isFinite(payload.lr)
+    ? payload.lr
+    : typeof store?.lastLearningRate === 'number'
+      ? store.lastLearningRate
+      : null;
+  const lrText = lrValue !== null ? String(lrValue) : 'n/a';
+  const examplesValue = typeof payload.examples === 'number'
+    ? payload.examples
+    : typeof store?.examples === 'number'
+      ? store.examples
+      : null;
+  const examplesText = examplesValue !== null ? String(examplesValue) : 'n/a';
+  pushTextLog(
+    `[BATCH] ep=${payload.epoch ?? '-'} st=${payload.step ?? '-'} loss=${loss} acc=${acc} top5=${top5} tps=${throughput} step_ms=${stepMs} ema_loss=${emaLoss} ema_acc=${emaAcc} lr=${lrText} examples=${examplesText}`,
+    payload.time_unix
+  );
+  store?.pushMessage('metrics_batch', payload, 'metrics_batch');
 };
 
 const handleMetricsEpoch = (payload: MetricPayload) => {
-  const loss = typeof payload.loss === 'number' ? payload.loss.toFixed(4) : 'n/a';
-  const acc = typeof payload.acc === 'number' ? payload.acc.toFixed(4) : 'n/a';
-  pushTextLog(`[EPOCH] epoch=${payload.epoch ?? '-'} loss=${loss} acc=${acc}`, payload.time_unix);
-  storeInstance?.pushMessage('metrics_epoch', payload, 'metrics_epoch');
+  const store = storeInstance;
+  store?.applyEpochMetric(payload);
+  const loss = formatFixed(payload.loss, 4);
+  const acc = formatFixed(payload.acc, 4);
+  const bestAccValue = typeof payload.best_acc === 'number' ? payload.best_acc : store?.bestAcc;
+  const bestLossValue = typeof payload.best_loss === 'number' ? payload.best_loss : store?.bestLoss;
+  const avgTpsValue = typeof payload.avg_throughput === 'number' ? payload.avg_throughput : store?.avgThroughput;
+  const epochSecValue = typeof payload.epoch_sec === 'number' ? payload.epoch_sec : store?.epochDuration;
+  const bestAcc = formatFixed(bestAccValue, 4);
+  const bestLoss = formatFixed(bestLossValue, 4);
+  const avgTps = formatFixed(avgTpsValue, 1);
+  const epochSec = formatFixed(epochSecValue, 1);
+  pushTextLog(
+    `[EPOCH] epoch=${payload.epoch ?? '-'} loss=${loss} acc=${acc} best_acc=${bestAcc} best_loss=${bestLoss} avg_tps=${avgTps} time=${epochSec}s`,
+    payload.time_unix
+  );
+  store?.pushMessage('metrics_epoch', payload, 'metrics_epoch');
 };
 
 const handleSysLog = (payload: UISysLogEvent) => {
@@ -71,6 +111,7 @@ const handleTrainInit = (payload: TrainInitEvent) => {
       K: typeof payload.fixed_point_K === 'number' ? payload.fixed_point_K : current.K,
       T: typeof payload.timesteps === 'number' ? payload.timesteps : current.T
     });
+    storeInstance.prepareRun(payload);
   }
   storeInstance?.pushPlainLog(text, 'INFO', payload.time_unix);
   storeInstance?.pushMessage('train_init', payload, 'train_init');

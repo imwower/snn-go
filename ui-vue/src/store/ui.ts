@@ -11,7 +11,8 @@ import type {
   TrainingStatus,
   LogPayload,
   LogEntry,
-  DatasetDownloadEvent
+  DatasetDownloadEvent,
+  TrainInitEvent
 } from '../types';
 
 const MAX_METRICS = 500;
@@ -31,6 +32,31 @@ const defaultConfig = (): TrainingConfig => ({
   T: 20,
   epochs: 3
 });
+
+const defaultBatchSnapshot = () => ({
+  epoch: null as number | null,
+  step: null as number | null,
+  loss: null as number | null,
+  acc: null as number | null,
+  top5: null as number | null,
+  throughput: null as number | null,
+  stepMs: null as number | null,
+  residual: null as number | null,
+  emaLoss: null as number | null,
+  emaAcc: null as number | null,
+  lr: null as number | null,
+  examples: null as number | null
+});
+
+type FinalSummary = {
+  epoch: number | null;
+  loss: number | null;
+  acc: number | null;
+  bestAcc: number | null;
+  bestLoss: number | null;
+  avgThroughput: number | null;
+  epochSec: number | null;
+};
 
 const buildLayout = (cfg: TrainingConfig): LayerLayout[] => {
   const layers: LayerLayout[] = [];
@@ -68,23 +94,37 @@ const buildLayout = (cfg: TrainingConfig): LayerLayout[] => {
 };
 
 export const useUiStore = defineStore('ui', {
-  state: () => ({
-    cfg: defaultConfig(),
-    status: 'Idle' as TrainingStatus,
-    metrics: [] as MetricEntry[],
-    lastMetric: null as MetricEntry | null,
-    spikes: [] as SpikeEntry[],
-    layersLayout: buildLayout(defaultConfig()),
-    messages: [] as MessageEntry[],
-    logs: [] as LogEntry[],
-    toast: null as { message: string; type: 'info' | 'error'; at: number; duration?: number } | null,
-    download: {
-      active: false,
-      name: '',
-      progress: 0,
-      startedAt: 0
-    }
-  }),
+  state: () => {
+    const cfg = defaultConfig();
+    return {
+      cfg,
+      status: 'Idle' as TrainingStatus,
+      metrics: [] as MetricEntry[],
+      lastMetric: null as MetricEntry | null,
+      lastBatch: defaultBatchSnapshot(),
+      bestAcc: 0,
+      bestLoss: Number.POSITIVE_INFINITY,
+      avgThroughput: null as number | null,
+      epochDuration: null as number | null,
+      totalEpochs: cfg.epochs ?? null,
+      lastEpochIndex: null as number | null,
+      examples: 0,
+      lastLearningRate: cfg.lr,
+      showDoneModal: false,
+      finalSummary: null as FinalSummary | null,
+      spikes: [] as SpikeEntry[],
+      layersLayout: buildLayout(cfg),
+      messages: [] as MessageEntry[],
+      logs: [] as LogEntry[],
+      toast: null as { message: string; type: 'info' | 'error'; at: number; duration?: number } | null,
+      download: {
+        active: false,
+        name: '',
+        progress: 0,
+        startedAt: 0
+      }
+    };
+  },
   getters: {
     totalNodes(state) {
       return state.layersLayout.reduce((acc, layer) => acc + layer.count, 0);
@@ -122,12 +162,142 @@ export const useUiStore = defineStore('ui', {
       }
       this.cfg = next;
       this.layersLayout = buildLayout(next);
+      this.totalEpochs = next.epochs ?? null;
+      this.lastLearningRate = next.lr;
     },
     setDataset(name: DatasetName) {
       this.setCfg({ dataset: name });
     },
     setStatus(status: TrainingStatus) {
       this.status = status;
+    },
+    updateBatchSnapshot(payload: MetricPayload) {
+      const snapshot = this.lastBatch ?? defaultBatchSnapshot();
+      if (!this.lastBatch) {
+        this.lastBatch = snapshot;
+      }
+      if (typeof payload.epoch === 'number') {
+        snapshot.epoch = payload.epoch;
+        this.lastEpochIndex = payload.epoch;
+      }
+      if (typeof payload.step === 'number') {
+        snapshot.step = payload.step;
+      }
+      if (typeof payload.loss === 'number') {
+        snapshot.loss = payload.loss;
+      }
+      if (typeof payload.acc === 'number') {
+        snapshot.acc = payload.acc;
+      }
+      if (typeof payload.top5 === 'number') {
+        snapshot.top5 = payload.top5;
+      }
+      if (typeof payload.throughput === 'number') {
+        snapshot.throughput = payload.throughput;
+      }
+      if (typeof payload.step_ms === 'number') {
+        snapshot.stepMs = payload.step_ms;
+      }
+      if (typeof payload.residual === 'number') {
+        snapshot.residual = payload.residual;
+      }
+      if (typeof payload.ema_loss === 'number') {
+        snapshot.emaLoss = payload.ema_loss;
+      }
+      if (typeof payload.ema_acc === 'number') {
+        snapshot.emaAcc = payload.ema_acc;
+      }
+      if (typeof payload.lr === 'number' && Number.isFinite(payload.lr)) {
+        snapshot.lr = payload.lr;
+        this.lastLearningRate = payload.lr;
+      }
+      if (typeof payload.examples === 'number') {
+        snapshot.examples = payload.examples;
+        this.examples = payload.examples;
+      }
+    },
+    prepareRun(init?: TrainInitEvent) {
+      this.metrics = [];
+      this.lastMetric = null;
+      this.lastBatch = defaultBatchSnapshot();
+      this.bestAcc = 0;
+      this.bestLoss = Number.POSITIVE_INFINITY;
+      this.avgThroughput = null;
+      this.epochDuration = null;
+      this.examples = 0;
+      this.lastEpochIndex = null;
+      this.showDoneModal = false;
+      this.finalSummary = null;
+      if (typeof init?.epochs === 'number') {
+        this.totalEpochs = init.epochs;
+      }
+      if (typeof init?.lr === 'number' && Number.isFinite(init.lr)) {
+        this.lastLearningRate = init.lr;
+      } else {
+        this.lastLearningRate = this.cfg.lr;
+      }
+      if (this.lastBatch) {
+        this.lastBatch.epoch = 0;
+        this.lastBatch.step = 0;
+        this.lastBatch.loss = null;
+        this.lastBatch.acc = null;
+        this.lastBatch.top5 = null;
+        this.lastBatch.throughput = null;
+        this.lastBatch.stepMs = null;
+        this.lastBatch.residual = null;
+        this.lastBatch.emaLoss = null;
+        this.lastBatch.emaAcc = null;
+        this.lastBatch.lr = this.lastLearningRate;
+        this.lastBatch.examples = 0;
+      }
+    },
+    applyEpochMetric(payload: MetricPayload) {
+      if (typeof payload.epoch === 'number') {
+        this.lastEpochIndex = payload.epoch;
+      }
+      if (typeof payload.best_acc === 'number') {
+        this.bestAcc = payload.best_acc;
+      } else if (typeof payload.acc === 'number') {
+        this.bestAcc = Math.max(this.bestAcc, payload.acc);
+      }
+      if (typeof payload.best_loss === 'number') {
+        this.bestLoss = payload.best_loss;
+      } else if (typeof payload.loss === 'number') {
+        this.bestLoss = Number.isFinite(this.bestLoss) ? Math.min(this.bestLoss, payload.loss) : payload.loss;
+      }
+      if (typeof payload.avg_throughput === 'number') {
+        this.avgThroughput = payload.avg_throughput;
+      }
+      if (typeof payload.epoch_sec === 'number') {
+        this.epochDuration = payload.epoch_sec;
+      }
+      const isFinal = typeof this.totalEpochs === 'number' && typeof payload.epoch === 'number' && payload.epoch === this.totalEpochs;
+      if (isFinal) {
+        const fallbackAcc = typeof payload.acc === 'number' ? payload.acc : null;
+        const fallbackLoss = typeof payload.loss === 'number' ? payload.loss : null;
+        this.finalSummary = {
+          epoch: payload.epoch ?? null,
+          loss: fallbackLoss,
+          acc: fallbackAcc,
+          bestAcc: Number.isFinite(this.bestAcc) ? this.bestAcc : fallbackAcc,
+          bestLoss: Number.isFinite(this.bestLoss) ? this.bestLoss : fallbackLoss,
+          avgThroughput: typeof payload.avg_throughput === 'number' ? payload.avg_throughput : this.avgThroughput,
+          epochSec: typeof payload.epoch_sec === 'number' ? payload.epoch_sec : this.epochDuration
+        };
+        this.showDoneModal = true;
+      }
+    },
+    setTotalEpochs(value?: number | null) {
+      this.totalEpochs = typeof value === 'number' ? value : null;
+    },
+    setLearningRate(value?: number) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        this.lastLearningRate = value;
+      }
+    },
+    dismissDoneModal() {
+      this.showDoneModal = false;
+      this.finalSummary = null;
     },
     pushMetric(payload: MetricPayload) {
       const entry: MetricEntry = { ...payload, at: Date.now() };
@@ -136,6 +306,7 @@ export const useUiStore = defineStore('ui', {
         this.metrics.splice(0, this.metrics.length - MAX_METRICS);
       }
       this.lastMetric = entry;
+      this.updateBatchSnapshot(payload);
     },
     pushSpike(payload: SpikePayload) {
       const entry: SpikeEntry = { ...payload, at: Date.now() };
@@ -183,6 +354,11 @@ export const useUiStore = defineStore('ui', {
       });
       this.metrics = entries;
       this.lastMetric = entries.length > 0 ? entries[entries.length - 1] : null;
+      if (this.lastMetric) {
+        this.updateBatchSnapshot(this.lastMetric);
+      } else {
+        this.lastBatch = defaultBatchSnapshot();
+      }
     },
     replaceSpikes(payloads: SpikePayload[]) {
       const entries = payloads.slice(-MAX_SPIKES).map((payload) => {
@@ -293,12 +469,24 @@ export const useUiStore = defineStore('ui', {
       }
     },
     reset() {
-      this.cfg = defaultConfig();
+      const cfg = defaultConfig();
+      this.cfg = cfg;
       this.status = 'Idle';
       this.metrics = [];
       this.lastMetric = null;
+      this.lastBatch = defaultBatchSnapshot();
+      this.bestAcc = 0;
+      this.bestLoss = Number.POSITIVE_INFINITY;
+      this.avgThroughput = null;
+      this.epochDuration = null;
+      this.examples = 0;
+      this.totalEpochs = cfg.epochs ?? null;
+      this.lastEpochIndex = null;
+      this.lastLearningRate = cfg.lr;
+      this.showDoneModal = false;
+      this.finalSummary = null;
       this.spikes = [];
-      this.layersLayout = buildLayout(this.cfg);
+      this.layersLayout = buildLayout(cfg);
       this.messages = [];
       this.logs = [];
       this.toast = null;

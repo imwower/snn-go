@@ -38,10 +38,19 @@ export interface MetricPayload {
   step: number;
   loss: number;
   acc?: number;
+  top5?: number;
+  ema_loss?: number;
+  ema_acc?: number;
   throughput?: number;
+  step_ms?: number;
   lr?: number;
   residual?: number;
   k?: number;
+  examples?: number;
+  best_acc?: number;
+  best_loss?: number;
+  avg_throughput?: number;
+  epoch_sec?: number;
   time_unix?: number;
 }
 
