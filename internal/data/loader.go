@@ -57,6 +57,6 @@ func synth(bs int, seed int64) *Loader {
 		bs:     bs,
 		seed:   seed,
 	}
-	ld.reset()
+	ld.Reset(seed)
 	return ld
 }

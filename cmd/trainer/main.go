@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"runtime"
 	"time"
 
 	"github.com/imwower/snn-go/internal/config"
@@ -21,6 +22,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败：%v", err)
 	}
+
+	log.Printf("系统基线：NumCPU=%d GOMAXPROCS=%d", runtime.NumCPU(), runtime.GOMAXPROCS(0))
 
 	bus, err := natsbus.Connect(natsbus.StreamConfig{
 		Stream:        cfg.NATS.Stream,
@@ -52,6 +55,10 @@ func main() {
 	bestLoss := math.MaxFloat64
 
 	for epoch := 1; epoch <= cfg.Training.Epochs; epoch++ {
+		if ld != nil {
+			ld.Reset(cfg.Training.Seed + int64(epoch))
+		}
+
 		epochStart := time.Now()
 		var sumLoss, sumAcc, sumTPS float64
 		var steps int

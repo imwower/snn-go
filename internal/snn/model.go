@@ -21,6 +21,9 @@ type ThreeCompNet struct {
 	W_out [][]float64 // [隐藏][输出]
 	B_out []float64
 
+	W_b2sT [][]float64 // [隐藏][隐藏]
+	W_a2sT [][]float64 // [隐藏][隐藏]
+
 	Theta                  float64
 	AlphaB, AlphaA, AlphaS float64
 	KappaBS, KappaAS       float64
@@ -28,7 +31,7 @@ type ThreeCompNet struct {
 
 func NewThreeCompNet(in, h, out int, seed int64, theta, ab, aa, as, kbs, kas float64) *ThreeCompNet {
 	rand.Seed(seed)
-	return &ThreeCompNet{
+	m := &ThreeCompNet{
 		Input: in, Hidden: h, Output: out,
 		W_in:  randMat(in, h, 0.05),
 		W_b2s: randMat(h, h, 0.02),
@@ -37,6 +40,9 @@ func NewThreeCompNet(in, h, out int, seed int64, theta, ab, aa, as, kbs, kas flo
 		B_out: make([]float64, out),
 		Theta: theta, AlphaB: ab, AlphaA: aa, AlphaS: as, KappaBS: kbs, KappaAS: kas,
 	}
+	m.W_b2sT = transpose(m.W_b2s)
+	m.W_a2sT = transpose(m.W_a2s)
+	return m
 }
 
 func randMat(r, c int, scale float64) [][]float64 {
@@ -48,6 +54,21 @@ func randMat(r, c int, scale float64) [][]float64 {
 		}
 	}
 	return m
+}
+
+func transpose(a [][]float64) [][]float64 {
+	if len(a) == 0 {
+		return nil
+	}
+	r, c := len(a), len(a[0])
+	t := make([][]float64, c)
+	for i := 0; i < c; i++ {
+		t[i] = make([]float64, r)
+		for j := 0; j < r; j++ {
+			t[i][j] = a[j][i]
+		}
+	}
+	return t
 }
 
 type ForwardCache struct {
@@ -74,6 +95,9 @@ type ForwardCache struct {
 //	dL/dW_in   ≈  x^T (δ_u^{t+1} W_b2s^T)    // 为简洁起见忽略高阶耦合
 //
 // 稳定性建议：执行梯度裁剪，γ∈[0.1,0.3]，学习率保持较小；必要时再补充端到端开关。
+// 统一解码说明：
+//   - 前向：固定 T 步逐步更新 v_s，累加 Σ_t v_s 后再解码 logits = (Σ_t v_s) · W_out + b_out；
+//   - 反向/评估：使用同一 Σ_t 聚合保持判别一致，避免 “Loss 低但 Acc 低”。
 func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache ForwardCache) {
 	B, H, O := len(x), m.Hidden, m.Output
 	cache.Vb = make([][]float64, T)
@@ -90,6 +114,8 @@ func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache 
 	vb := make([]float64, B*H)
 	va := make([]float64, B*H)
 	vs := make([]float64, B*H)
+	zbuf := make([]float64, B*H)
+	workers := defaultWorkers()
 
 	agg := make([][]float64, B) // Σ_t vs · W_out 的累积量
 	for b := 0; b < B; b++ {
@@ -117,27 +143,35 @@ func (m *ThreeCompNet) Forward(x [][]float64, T int) (logits [][]float64, cache 
 		}
 		// 细胞体与放电
 		for b := 0; b < B; b++ {
+			base := b * H
+			vbRow := vb[base : base+H]
+			vaRow := va[base : base+H]
+			vsRow := vs[base : base+H]
+			zRow := zbuf[base : base+H]
 			for h := 0; h < H; h++ {
-				idx := b*H + h
-				z := (1 - m.AlphaS) * vs[idx]
-				for k := 0; k < H; k++ {
-					z += vb[b*H+k]*m.W_b2s[k][h] + va[b*H+k]*m.W_a2s[k][h]
-				}
+				zRow[h] = (1 - m.AlphaS) * vsRow[h]
+			}
+			gemvVecParallel(vbRow, m.W_b2sT, zRow, workers)
+			gemvVecParallel(vaRow, m.W_a2sT, zRow, workers)
+			for h := 0; h < H; h++ {
+				idx := base + h
+				z := zRow[h]
 				sp := heaviside(z - m.Theta)
-				vs[idx] = z - m.Theta*float64(sp)
+				vsRow[h] = z - m.Theta*float64(sp)
 
 				cache.Vb[t][idx] = vb[idx]
 				cache.Va[t][idx] = va[idx]
-				cache.Vs[t][idx] = vs[idx]
+				cache.Vs[t][idx] = vsRow[h]
 				cache.S[t][idx] = float64(sp)
 			}
 		}
 		// 读出聚合
 		for b := 0; b < B; b++ {
+			vsRow := vs[b*H : (b+1)*H]
 			for o := 0; o < O; o++ {
 				sum := 0.0
 				for h := 0; h < H; h++ {
-					sum += vs[b*H+h] * m.W_out[h][o]
+					sum += vsRow[h] * m.W_out[h][o]
 				}
 				agg[b][o] += sum
 			}
@@ -183,6 +217,9 @@ func softmaxCE(logits []float64, y int) (loss float64, probs []float64) {
 	return
 }
 
+// 统一解码说明：
+//   - 前向：固定 T 步逐步更新 v_s，累加 Σ_t v_s 后再解码 logits = (Σ_t v_s) · W_out + b_out；
+//   - 反向/评估：使用同一 Σ_t 聚合保持判别一致，避免 “Loss 低但 Acc 低”。
 func (m *ThreeCompNet) BackpropReadout(cache ForwardCache, x [][]float64, logits [][]float64, y []int, lr float64) (float64, float64) {
 	B := len(x)
 	H := m.Hidden

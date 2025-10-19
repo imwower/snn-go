@@ -69,14 +69,20 @@ func NewLoaderMNIST(root string, bs int, seed int64) (*Loader, error) {
 
 	log.Printf("mnist：已从 %s 载入 %d 条样本", root, n)
 	ld := &Loader{images: images, labels: labels, bs: bs, seed: seed}
-	ld.reset()
+	ld.Reset(seed)
 	return ld, nil
 }
 
-func (l *Loader) reset() {
+func (l *Loader) Reset(seed int64) {
+	if l == nil || len(l.labels) == 0 {
+		return
+	}
 	l.pos = 0
-	n := len(l.labels)
+	if seed != 0 {
+		l.seed = seed
+	}
 	r := rand.New(rand.NewSource(l.seed))
+	n := len(l.labels)
 	l.perm = r.Perm(n)
 }
 
