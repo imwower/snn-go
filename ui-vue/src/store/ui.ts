@@ -352,9 +352,9 @@ export const useUiStore = defineStore('ui', {
       if (!layout || layout.count <= 0) {
         return;
       }
-      const baseCount = Math.max(1, Math.round(layout.count * 0.015));
-      const residualMagnitude = typeof payload.residual === 'number' ? Math.min(1, Math.abs(payload.residual) * 0.6) : 0;
-      const extra = Math.round(baseCount * residualMagnitude * 4);
+      const baseCount = Math.max(1, Math.round(layout.count * 0.05));
+      const residualMagnitude = typeof payload.residual === 'number' ? Math.min(1, Math.abs(payload.residual) * 0.8) : 0;
+      const extra = Math.round(baseCount * residualMagnitude * 3);
       const total = Math.min(layout.count, baseCount + extra);
 
       const neurons: number[] = [];

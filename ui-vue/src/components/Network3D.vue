@@ -199,7 +199,13 @@ const buildNodes = (layouts: LayerLayout[]) => {
   nodeColors = new Float32Array(totalInstances * 3);
   glow = new Float32Array(totalInstances);
   nodeGeometry = new THREE.SphereGeometry(0.25, 20, 20);
-  nodeMaterial = new THREE.MeshPhongMaterial({ color: baseNodeColor, emissive: 0x0e223a, shininess: 40 });
+  nodeMaterial = new THREE.MeshPhongMaterial({
+    color: baseNodeColor,
+    emissive: 0x0e223a,
+    emissiveIntensity: 0.4,
+    shininess: 50,
+    vertexColors: true
+  });
   nodeMesh = new THREE.InstancedMesh(nodeGeometry, nodeMaterial, totalInstances);
   nodeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
@@ -223,6 +229,7 @@ const buildNodes = (layouts: LayerLayout[]) => {
   });
 
   nodeColorAttr = new THREE.InstancedBufferAttribute(nodeColors, 3);
+  nodeColorAttr.setUsage(THREE.DynamicDrawUsage);
   nodeMesh.instanceColor = nodeColorAttr;
   nodeMesh.instanceMatrix.needsUpdate = true;
 
@@ -269,7 +276,7 @@ const rebuildScene = (layouts: LayerLayout[]) => {
 const highlightNeurons = (globalIndices: number[]) => {
   globalIndices.forEach((index) => {
     if (index >= 0 && index < glow.length) {
-      glow[index] = 1;
+      glow[index] = Math.max(glow[index], 1.5);
     }
   });
 };
@@ -281,7 +288,7 @@ const highlightEdges = (edgePairs: Array<[number, number]> | undefined, neurons:
       const key = `${src}:${dst}`;
       const edgeIdx = edgeIndexMap.get(key);
       if (edgeIdx !== undefined) {
-        edgeIntensity[edgeIdx] = 1;
+        edgeIntensity[edgeIdx] = Math.max(edgeIntensity[edgeIdx] ?? 0, 1.4);
         touched.add(edgeIdx);
       }
     });
@@ -292,7 +299,7 @@ const highlightEdges = (edgePairs: Array<[number, number]> | undefined, neurons:
         return;
       }
       edgesForNeuron.forEach((edgeIdx) => {
-        edgeIntensity[edgeIdx] = 1;
+        edgeIntensity[edgeIdx] = Math.max(edgeIntensity[edgeIdx] ?? 0, 1.4);
         touched.add(edgeIdx);
       });
     });
@@ -346,8 +353,8 @@ const animate = () => {
     return;
   }
   const delta = clock.getDelta();
-  const glowDecay = delta * 1.1;
-  const edgeDecay = delta * 0.9;
+  const glowDecay = delta * 0.8;
+  const edgeDecay = delta * 0.7;
   let colorDirty = false;
 
   if (glow.length && nodeMesh && nodeColorAttr) {
