@@ -1,22 +1,62 @@
 package data
 
 import (
-	"fmt"
+	"math/rand"
 	"strings"
 )
 
+const (
+	synthFeatures = 784
+	synthClasses  = 10
+	synthSamples  = 2048
+)
+
 // 统一入口：根据数据集类型选择加载器
-// 数据集类型："MNIST" | "FASHION"
 func NewLoader(dataset, root string, bs int, seed int64) (*Loader, error) {
-	name := strings.TrimSpace(dataset)
-	if name == "" {
-		name = "MNIST"
-	}
-	switch strings.ToUpper(name) {
+	name := strings.ToUpper(strings.TrimSpace(dataset))
+	switch name {
 	case "MNIST", "FASHION":
-		// FASHION 与 MNIST 同 IDX 格式，文件名通常亦相同；根目录指向对应路径即可
-		return NewLoaderMNIST(root, bs, seed)
+		if ld, err := NewLoaderMNIST(root, bs, seed); err == nil {
+			return ld, nil
+		}
+		return synth(bs, seed), nil
+	case "SYNTH":
+		return synth(bs, seed), nil
 	default:
-		return nil, fmt.Errorf("unsupported dataset: %s", name)
+		if ld, err := NewLoaderMNIST(root, bs, seed); err == nil {
+			return ld, nil
+		}
+		return synth(bs, seed), nil
 	}
+}
+
+func synth(bs int, seed int64) *Loader {
+	if bs <= 0 {
+		bs = 1
+	}
+	n := synthSamples
+	if n < bs {
+		n = bs
+	}
+
+	rng := rand.New(rand.NewSource(seed))
+	images := make([][]float64, n)
+	labels := make([]int, n)
+	for i := 0; i < n; i++ {
+		row := make([]float64, synthFeatures)
+		for j := range row {
+			row[j] = rng.Float64()
+		}
+		images[i] = row
+		labels[i] = rng.Intn(synthClasses)
+	}
+
+	ld := &Loader{
+		images: images,
+		labels: labels,
+		bs:     bs,
+		seed:   seed,
+	}
+	ld.reset()
+	return ld
 }

@@ -9,9 +9,8 @@ import (
 )
 
 type Bus struct {
-	nc  *nats.Conn
-	js  nats.JetStreamContext
-	cfg StreamConfig
+	nc *nats.Conn
+	js nats.JetStreamContext
 }
 
 type StreamConfig struct {
@@ -36,7 +35,7 @@ func Connect(cfg StreamConfig) (*Bus, error) {
 		Retention:  nats.LimitsPolicy,
 		Duplicates: time.Duration(cfg.DupeWindowSec) * time.Second,
 	})
-	return &Bus{nc: nc, js: js, cfg: cfg}, nil
+	return &Bus{nc: nc, js: js}, nil
 }
 
 func (b *Bus) PublishJSON(subject, msgID string, v any) error {

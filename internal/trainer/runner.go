@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/imwower/snn-go/internal/config"
 	"github.com/imwower/snn-go/internal/data"
@@ -218,6 +219,10 @@ func (r *Runner) run(ctx context.Context, opts Options) {
 		opts.KappaBS, opts.KappaAS,
 	)
 
+	var globalExamples int64
+	bestAcc := -1.0
+	bestLoss := math.MaxFloat64
+
 loopEpochs:
 	for epoch := 1; epoch <= opts.Epochs; epoch++ {
 		select {
@@ -228,8 +233,11 @@ loopEpochs:
 		default:
 		}
 
-		var sumLoss, sumAcc float64
+		epochStart := time.Now()
+		var sumLoss, sumAcc, sumTPS float64
 		var steps int
+		emaLoss, emaAcc := 0.0, 0.0
+		const emaAlpha = 0.1
 		logInfo(fmt.Sprintf("=== 开始第 %d/%d 轮 ===", epoch, opts.Epochs))
 
 		for {
@@ -247,11 +255,12 @@ loopEpochs:
 			}
 			steps++
 
+			stepStart := time.Now()
 			logits, cache := net.Forward(batch.X, opts.Timesteps)
 			residual := residualFromVs(cache)
 
 			_ = bus.PublishJSON(r.cfg.NATS.Subjects.TrainIter,
-				natsbus.MsgID("fpt-", epoch, "-", steps, "-", events.Now()),
+				natsbus.MsgID("fpt-", epoch, "-", steps, "-", time.Now().UnixNano()),
 				events.FPTRound{Epoch: epoch, Step: steps, K: 1, Residual: residual, Time: events.Now()},
 			)
 
@@ -261,16 +270,36 @@ loopEpochs:
 			} else {
 				loss, acc = net.BackpropReadout(cache, batch.X, logits, batch.Y, opts.LearningRate)
 			}
+			top5 := topKAcc(logits, batch.Y, 5)
+
+			stepMS := float64(time.Since(stepStart).Milliseconds())
+			if stepMS <= 0 {
+				stepMS = 1
+			}
+			tps := float64(len(batch.X)) / (stepMS / 1000.0)
+
+			globalExamples += int64(len(batch.X))
+			emaLoss = emaAlpha*loss + (1-emaAlpha)*emaLoss
+			emaAcc = emaAlpha*acc + (1-emaAlpha)*emaAcc
 
 			sumLoss += loss
 			sumAcc += acc
+			sumTPS += tps
 
 			_ = bus.PublishJSON(r.cfg.NATS.Subjects.MetricsBatch,
 				natsbus.MsgID("mb-", epoch, "-", steps),
-				events.MetricsBatch{Epoch: epoch, Step: steps, Loss: loss, Acc: acc, Time: events.Now()},
+				events.MetricsBatch{
+					Epoch: epoch, Step: steps,
+					Loss: loss, Acc: acc, Top5: top5,
+					EMALoss: emaLoss, EMAAcc: emaAcc,
+					Throughput: tps, StepMS: stepMS,
+					Residual: residual, Examples: globalExamples,
+					LR: opts.LearningRate, Time: events.Now(),
+				},
 			)
 
-			logInfo(fmt.Sprintf("轮次=%d 步数=%d 损失=%.4f 准确率=%.4f 残差=%.6f", epoch, steps, loss, acc, residual))
+			logInfo(fmt.Sprintf("epoch=%d step=%d loss=%.4f acc=%.4f top5=%.4f ema_loss=%.4f ema_acc=%.4f tps=%.1f step_ms=%.0f residual=%.6f examples=%d",
+				epoch, steps, loss, acc, top5, emaLoss, emaAcc, tps, stepMS, residual, globalExamples))
 		}
 
 		if r.lastErr == context.Canceled {
@@ -279,16 +308,31 @@ loopEpochs:
 
 		epochLoss := sumLoss / math.Max(1, float64(steps))
 		epochAcc := sumAcc / math.Max(1, float64(steps))
+		avgTPS := sumTPS / math.Max(1, float64(steps))
+		epochSec := time.Since(epochStart).Seconds()
+
+		if epochAcc > bestAcc {
+			bestAcc = epochAcc
+		}
+		if epochLoss < bestLoss {
+			bestLoss = epochLoss
+		}
 
 		_ = bus.PublishJSON(r.cfg.NATS.Subjects.MetricsEpoch,
 			natsbus.MsgID("me-", epoch),
-			events.MetricsEpoch{Epoch: epoch, Loss: epochLoss, Acc: epochAcc, Time: events.Now()},
+			events.MetricsEpoch{
+				Epoch: epoch, Loss: epochLoss, Acc: epochAcc,
+				BestLoss: bestLoss, BestAcc: bestAcc,
+				AvgThroughput: avgTPS, EpochSec: epochSec,
+				Time: events.Now(),
+			},
 		)
 		_ = bus.PublishJSON(r.cfg.NATS.Subjects.ParamsApply,
 			natsbus.MsgID("pa-", epoch),
 			events.ParamApply{Epoch: epoch, Step: steps, LR: opts.LearningRate, Time: events.Now()},
 		)
-		logInfo(fmt.Sprintf("=== 结束第 %d 轮：loss=%.4f acc=%.4f ===", epoch, epochLoss, epochAcc))
+		logInfo(fmt.Sprintf("=== 结束第 %d 轮：loss=%.4f acc=%.4f avg_tps=%.1f time=%.1fs ===",
+			epoch, epochLoss, epochAcc, avgTPS, epochSec))
 	}
 
 	if r.lastErr == context.Canceled {
@@ -333,4 +377,42 @@ func residualFromVs(c snn.ForwardCache) float64 {
 		return 0
 	}
 	return sum / float64(cnt)
+}
+
+func topKAcc(logits [][]float64, y []int, k int) float64 {
+	B := len(logits)
+	if B == 0 {
+		return 0
+	}
+	correct := 0
+	for i := 0; i < B; i++ {
+		type pair struct {
+			idx int
+			val float64
+		}
+		arr := make([]pair, len(logits[i]))
+		for j, v := range logits[i] {
+			arr[j] = pair{idx: j, val: v}
+		}
+		for a := 0; a < k && a < len(arr); a++ {
+			maxIdx := a
+			for b := a + 1; b < len(arr); b++ {
+				if arr[b].val > arr[maxIdx].val {
+					maxIdx = b
+				}
+			}
+			arr[a], arr[maxIdx] = arr[maxIdx], arr[a]
+		}
+		found := false
+		for a := 0; a < k && a < len(arr); a++ {
+			if arr[a].idx == y[i] {
+				found = true
+				break
+			}
+		}
+		if found {
+			correct++
+		}
+	}
+	return float64(correct) / float64(B)
 }
