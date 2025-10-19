@@ -69,6 +69,7 @@ const handleMetricsBatch = (payload: MetricPayload) => {
     payload.time_unix
   );
   store?.pushMessage('metrics_batch', payload, 'metrics_batch');
+  store?.maybeTriggerPulseFromMetric(payload);
 };
 
 const handleMetricsEpoch = (payload: MetricPayload) => {

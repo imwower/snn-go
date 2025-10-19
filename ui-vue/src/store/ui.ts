@@ -21,6 +21,7 @@ const MAX_SPIKES = 60;
 const MAX_MESSAGES = 100;
 const MAX_LOGS = 500;
 const DEFAULT_TOAST_DURATION = 3000;
+const PULSE_COOLDOWN_MS = 60;
 
 const defaultConfig = (): TrainingConfig => ({
   dataset: 'MNIST',
@@ -124,7 +125,8 @@ export const useUiStore = defineStore('ui', {
         progress: 0,
         startedAt: 0
       },
-      pulseLayerCursor: 0
+      pulseLayerCursor: 0,
+      lastPulseAt: null as number | null
     };
   },
   getters: {
@@ -335,6 +337,7 @@ export const useUiStore = defineStore('ui', {
       if (this.spikes.length > MAX_SPIKES) {
         this.spikes.splice(0, this.spikes.length - MAX_SPIKES);
       }
+      this.lastPulseAt = Date.now();
     },
     triggerPulseFromIter(payload: TrainIterEvent) {
       if (!this.layersLayout.length) {
@@ -372,6 +375,18 @@ export const useUiStore = defineStore('ui', {
         layer: layerIndex,
         t: typeof payload.time_unix === 'number' ? payload.time_unix : Math.floor(Date.now() / 1000),
         neurons
+      });
+    },
+    maybeTriggerPulseFromMetric(payload: MetricPayload) {
+      const now = Date.now();
+      if (typeof this.lastPulseAt === 'number' && now - this.lastPulseAt < PULSE_COOLDOWN_MS) {
+        return;
+      }
+      this.triggerPulseFromIter({
+        epoch: payload.epoch,
+        step: payload.step,
+        residual: payload.residual,
+        time_unix: payload.time_unix
       });
     },
     pushMessage(subject: string, payload?: unknown, type?: string) {
@@ -446,6 +461,7 @@ export const useUiStore = defineStore('ui', {
     },
     clearSpikes() {
       this.spikes = [];
+      this.lastPulseAt = null;
     },
     showToast(message: string, type: 'info' | 'error' = 'info', duration = DEFAULT_TOAST_DURATION) {
       this.toast = {
