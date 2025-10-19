@@ -180,7 +180,11 @@ const setupListeners = (evSource: EventSource) => {
     const payload = parseJSON<{ status?: string }>(event.data);
     if (payload?.status && storeInstance) {
       const nextStatus = payload.status as TrainingStatus;
+      const prevStatus = storeInstance.status;
       storeInstance.setStatus(nextStatus);
+      if (prevStatus === 'Training' && nextStatus === 'Idle') {
+        storeInstance.markTrainingDone();
+      }
     }
   });
   evSource.addEventListener('dataset_download', (event: MessageEvent<string>) => {

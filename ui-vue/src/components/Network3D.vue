@@ -36,10 +36,10 @@ let edgeIndexMap = new Map<string, number>();
 let nodeToEdges = new Map<number, number[]>();
 let edgesList: Array<{ src: number; dst: number }> = [];
 
-const baseNodeColor = new THREE.Color('#2563eb');
-const highlightNodeColor = new THREE.Color('#f97316');
-const baseEdgeColor = new THREE.Color('#37588f');
-const highlightEdgeColor = new THREE.Color('#fb923c');
+const baseNodeColor = new THREE.Color('#1d4ed8');
+const highlightNodeColor = new THREE.Color('#fde047');
+const baseEdgeColor = new THREE.Color('#1f2937');
+const highlightEdgeColor = new THREE.Color('#fde047');
 const baseEdgeHSL = { h: 0, s: 0, l: 0 };
 const highlightEdgeHSL = { h: 0, s: 0, l: 0 };
 baseEdgeColor.getHSL(baseEdgeHSL);
@@ -174,8 +174,10 @@ const buildEdges = (layouts: LayerLayout[]) => {
   edgeMaterial = new THREE.LineBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.45,
-    linewidth: 2
+    opacity: 0.5,
+    linewidth: 2,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
   });
 
   edgeSegments = new THREE.LineSegments(edgeGeometry, edgeMaterial);
@@ -344,8 +346,8 @@ const animate = () => {
     return;
   }
   const delta = clock.getDelta();
-  const glowDecay = delta * 1.8;
-  const edgeDecay = delta * 1.6;
+  const glowDecay = delta * 1.1;
+  const edgeDecay = delta * 0.9;
   let colorDirty = false;
 
   if (glow.length && nodeMesh && nodeColorAttr) {
@@ -389,7 +391,7 @@ const animate = () => {
     edgeColorAttr.needsUpdate = true;
   }
   if (edgeMaterial) {
-    edgeMaterial.opacity = 0.15 + Math.min(0.65, maxEdge);
+    edgeMaterial.opacity = 0.25 + Math.min(0.6, maxEdge * 0.85);
   }
 
   controls?.update();
